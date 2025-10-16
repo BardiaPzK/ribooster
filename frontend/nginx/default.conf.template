@@ -10,15 +10,13 @@ server {
     try_files $uri $uri/ /index.html;
   }
 
-  # Health for Azure probes
+  # Health check
   location = /health {
     return 200 "ok";
     add_header Content-Type text/plain;
   }
 
-  # IMPORTANT: proxy all /api/* to backend and STRIP the /api prefix
-  # The trailing slash on proxy_pass is what strips the /api/ prefix:
-  #   /api/auth/login  ->  /auth/login on the upstream
+  # Proxy all /api/* to backend, strip /api prefix
   location /api/ {
     proxy_http_version 1.1;
     proxy_set_header Host              $host;
@@ -27,7 +25,6 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_redirect off;
 
-    # The trailing slash is deliberate.
     proxy_pass ${BACKEND_URL}/;
   }
 }

@@ -16,7 +16,7 @@ COPY --from=build /app/dist/ /usr/share/nginx/html/
 # Copy NGINX template to templates directory
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 
-# Environment variable consumed by NGINX template
+# Environment variable consumed by template
 ENV BACKEND_URL="https://ribooster-backend-app.azurewebsites.net"
 
 EXPOSE 80
