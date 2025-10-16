@@ -1,0 +1,23 @@
+# .gitignore (root)
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+.env.*
+dist/
+build/
+
+# Node
+node_modules/
+dist/
+.vite/
+.next/
+
+# OS
+.DS_Store
+
+# Docker
+*.log

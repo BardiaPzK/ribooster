@@ -1,0 +1,101 @@
+# .github/workflows/build-and-deploy.yml
+name: Build and Deploy (Azure Web App for Containers)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}                      # e.g., riboosteracr
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}      # e.g., riboosteracr.azurecr.io
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}  # e.g., rg-ribooster-prod-ne
+  BACKEND_APP_NAME: ${{ secrets.BACKEND_APP_NAME }}      # e.g., ribooster-backend-app
+  FRONTEND_APP_NAME: ${{ secrets.FRONTEND_APP_NAME }}    # e.g., ribooster-frontend-app
+
+  # Backend app settings (from repo secrets)
+  APP_ENV: "prod"
+  ADMIN_ACCESS_CODE: ${{ secrets.ADMIN_ACCESS_CODE }}    # set to "admin"
+  ADMIN_USERS: ${{ secrets.ADMIN_USERS }}                # "admin:admin,admin2:admin2"
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}             # Azure PG URL with sslmode=require
+  CORS_ALLOW_ORIGINS: ${{ secrets.CORS_ALLOW_ORIGINS }} # e.g., ["https://ribooster-frontend-app.azurewebsites.net","https://www.ribooster.com"]
+  WEBSITES_PORT: "80"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set Azure subscription
+        run: az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+
+      - name: Docker Login to ACR
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Prepare image tags
+        id: prep
+        run: |
+          echo "backend_image=${ACR_LOGIN_SERVER}/ribooster-backend:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "frontend_image=${ACR_LOGIN_SERVER}/ribooster-frontend:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "backend_latest=${ACR_LOGIN_SERVER}/ribooster-backend:latest" >> $GITHUB_OUTPUT
+          echo "frontend_latest=${ACR_LOGIN_SERVER}/ribooster-frontend:latest" >> $GITHUB_OUTPUT
+
+      - name: Build & Push Backend
+        run: |
+          docker build -t ${{ steps.prep.outputs.backend_image }} -t ${{ steps.prep.outputs.backend_latest }} ./backend
+          docker push ${{ steps.prep.outputs.backend_image }}
+          docker push ${{ steps.prep.outputs.backend_latest }}
+
+      - name: Build & Push Frontend
+        run: |
+          docker build -t ${{ steps.prep.outputs.frontend_image }} -t ${{ steps.prep.outputs.frontend_latest }} ./frontend
+          docker push ${{ steps.prep.outputs.frontend_image }}
+          docker push ${{ steps.prep.outputs.frontend_latest }}
+
+      - name: Configure Backend App Settings
+        run: |
+          az webapp config appsettings set -g "$AZURE_RESOURCE_GROUP" -n "$BACKEND_APP_NAME" --settings \
+            APP_ENV="${APP_ENV}" \
+            ADMIN_ACCESS_CODE="${ADMIN_ACCESS_CODE}" \
+            ADMIN_USERS="${ADMIN_USERS}" \
+            DATABASE_URL="${DATABASE_URL}" \
+            CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS}" \
+            WEBSITES_PORT="${WEBSITES_PORT}"
+
+      - name: Configure Frontend App Settings
+        run: |
+          BACKEND_URL="https://${BACKEND_APP_NAME}.azurewebsites.net"
+          az webapp config appsettings set -g "$AZURE_RESOURCE_GROUP" -n "$FRONTEND_APP_NAME" --settings \
+            BACKEND_URL="${BACKEND_URL}" \
+            WEBSITES_PORT="${WEBSITES_PORT}"
+
+      - name: Update Backend Web App image
+        run: |
+          az webapp config container set \
+            -g "$AZURE_RESOURCE_GROUP" -n "$BACKEND_APP_NAME" \
+            --docker-custom-image-name "${{ steps.prep.outputs.backend_image }}" \
+            --docker-registry-server-url "https://${ACR_LOGIN_SERVER}"
+
+      - name: Update Frontend Web App image
+        run: |
+          az webapp config container set \
+            -g "$AZURE_RESOURCE_GROUP" -n "$FRONTEND_APP_NAME" \
+            --docker-custom-image-name "${{ steps.prep.outputs.frontend_image }}" \
+            --docker-registry-server-url "https://${ACR_LOGIN_SERVER}"
+
+      - name: Restart apps
+        run: |
+          az webapp restart -g "$AZURE_RESOURCE_GROUP" -n "$BACKEND_APP_NAME"
+          az webapp restart -g "$AZURE_RESOURCE_GROUP" -n "$FRONTEND_APP_NAME"

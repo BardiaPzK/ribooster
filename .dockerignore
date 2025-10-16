@@ -1,0 +1,11 @@
+# .dockerignore (root or backend/.dockerignore)
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.venv
+**/node_modules
+**/.next
+**/dist
