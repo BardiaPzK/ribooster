@@ -1,27 +1,39 @@
-server {
-  listen 80;
-  server_name _;
+# frontend/nginx.conf.template
+worker_processes auto;
 
-  root /usr/share/nginx/html;
-  index index.html;
+events { worker_connections 1024; }
 
-  # ✅ Proxy /api/* to backend and strip the /api/ prefix
-  location /api/ {
+http {
+  include       /etc/nginx/mime.types;
+  default_type  application/octet-stream;
+  sendfile      on;
+
+  server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Health for Azure
+    location = /health { return 200 "ok"; }
+
+    # ✅ SPA
+    location / {
+      try_files $uri /index.html;
+    }
+
+    # ✅ Proxy /api/* to backend and strip the /api/ prefix (trailing slash is critical)
+    location /api/ {
       proxy_http_version 1.1;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_redirect off;
 
-      # IMPORTANT: trailing slash tells nginx to replace "/api/" with "/"
+      # IMPORTANT: this trailing slash replaces "/api/" with "/"
       proxy_pass ${BACKEND_URL}/;
+    }
   }
-
-  # SPA
-  location / {
-      try_files $uri /index.html;
-  }
-
-  # Health
-  location = /health { return 200 "ok"; }
 }
