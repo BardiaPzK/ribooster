@@ -7,32 +7,32 @@ server {
 
   # SPA routing
   location / {
-    try_files "$$uri" "$$uri/" /index.html;
+    try_files $uri $uri/ /index.html;  # <-- single $
   }
 
-  # Health checks
-  location = /health { return 200 "ok"; add_header Content-Type text/plain; }
-  location = /api/health { return 200 "ok"; add_header Content-Type text/plain; }
+  # fast health for App Service + for your proxy path
+  location = /health      { return 200 "ok"; add_header Content-Type text/plain; }
+  location = /api/health  { return 200 "ok"; add_header Content-Type text/plain; }
 
-  # Proxy /api/* to backend
+  # proxy /api/* to backend (strip /api)
   location ^~ /api/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $$host;
-    proxy_set_header X-Real-IP $$remote_addr;
-    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $$scheme;
+    proxy_set_header Host              $host;               # <-- single $
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 
     rewrite ^/api/(.*)$ /$1 break;
-    proxy_pass ${BACKEND_URL};
+    proxy_pass ${BACKEND_URL};  # this one stays ${...} so envsubst fills it
   }
 
-  # Proxy /auth/* to backend
+  # also proxy /auth/* (strip /auth)
   location ^~ /auth/ {
     proxy_http_version 1.1;
-    proxy_set_header Host $$host;
-    proxy_set_header X-Real-IP $$remote_addr;
-    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $$scheme;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 
     rewrite ^/auth/(.*)$ /$1 break;
     proxy_pass ${BACKEND_URL};
