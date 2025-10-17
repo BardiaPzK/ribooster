@@ -5,7 +5,7 @@ server {
   root   /usr/share/nginx/html;
   index  index.html;
 
-  # allow decent payloads
+  # Allow larger JSON bodies if needed
   client_max_body_size 10m;
 
   # SPA routing
@@ -13,25 +13,25 @@ server {
     try_files $uri $uri/ /index.html;
   }
 
-  # Health for App Service
-  location = /health {
+  # App Service health (fast 200 text)
+  location = /api/health {
     return 200 "ok";
     add_header Content-Type text/plain;
   }
 
-  # ---- API proxy (strips /api prefix, passes through POST/PUT/DELETE, etc.) ----
+  # Proxy all /api/* -> backend (strip /api/)
   location ^~ /api/ {
     proxy_http_version 1.1;
-
     proxy_set_header Host              $host;
     proxy_set_header X-Real-IP         $remote_addr;
     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
 
-    # strip /api prefix before forwarding to backend
-    rewrite ^/api/(.*)$ /$1 break;
+    # SNI for HTTPS upstream (*.azurewebsites.net)
+    proxy_ssl_server_name on;
 
-    # BACKEND_URL comes from the container env (App Settings)
-    proxy_pass ${BACKEND_URL};
+    # simpler & safer than rewrite: trailing slash strips the /api/ prefix
+    proxy_pass ${BACKEND_URL}/;
+    # Example: /api/auth/login -> https://backend.azurewebsites.net/auth/login
   }
 }

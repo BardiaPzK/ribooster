@@ -1,9 +1,8 @@
-# backend/app/routes/health.py
 from fastapi import APIRouter
-from app.core.config import settings
+import os
 
 router = APIRouter()
 
 @router.get("/health")
 def health():
-    return {"ok": True, "env": settings.APP_ENV}
+    return {"ok": True, "env": os.getenv("APP_ENV", "unknown")}

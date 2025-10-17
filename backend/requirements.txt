@@ -1,7 +1,7 @@
 # backend/requirements.txt
-fastapi==0.115.4
+fastapi==0.115.5
 uvicorn[standard]==0.30.6
-gunicorn==23.0.0
+gunicorn==22.0.0
 pydantic==2.9.2
 pydantic-settings==2.6.1
 SQLAlchemy==2.0.36
