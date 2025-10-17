@@ -39,12 +39,12 @@ def create_app() -> FastAPI:
     app.add_middleware(ActivityMiddleware)
 
     # Routes
-    app.include_router(health.router, tags=["health"])
+    #app.include_router(health.router, tags=["health"])
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
-    app.include_router(admin.router, prefix="/admin", tags=["admin"])
-    app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
-    app.include_router(billing.router, prefix="/billing", tags=["billing"])
-    app.include_router(tickets.router, prefix="/tickets", tags=["tickets"])
+    #app.include_router(admin.router, prefix="/admin", tags=["admin"])
+    #app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
+    #app.include_router(billing.router, prefix="/billing", tags=["billing"])
+    #app.include_router(tickets.router, prefix="/tickets", tags=["tickets"])
 
     @app.on_event("startup")
     def on_startup() -> None:
