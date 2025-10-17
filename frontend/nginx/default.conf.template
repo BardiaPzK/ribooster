@@ -8,30 +8,41 @@ server {
   # Allow larger JSON bodies if needed
   client_max_body_size 10m;
 
-  # SPA routing
+  # SPA routing (escape nginx vars so envsubst doesn't clear them)
   location / {
-    try_files $uri $uri/ /index.html;
+    try_files $$uri $$uri/ /index.html;
   }
 
-  # App Service health (fast 200 text)
+  # Health (fast 200)
   location = /api/health {
     return 200 "ok";
     add_header Content-Type text/plain;
   }
 
-  # Proxy all /api/* -> backend (strip /api/)
+  # Proxy: /api/*  -> ${BACKEND_URL}/*   (strip "/api/" prefix)
   location ^~ /api/ {
     proxy_http_version 1.1;
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    # SNI for HTTPS upstream (*.azurewebsites.net)
+    proxy_set_header Host              $$host;
+    proxy_set_header X-Real-IP         $$remote_addr;
+    proxy_set_header X-Forwarded-For   $$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $$scheme;
     proxy_ssl_server_name on;
 
-    # simpler & safer than rewrite: trailing slash strips the /api/ prefix
+    # trailing slash strips '/api/' and forwards the rest
     proxy_pass ${BACKEND_URL}/;
-    # Example: /api/auth/login -> https://backend.azurewebsites.net/auth/login
+  }
+
+  # (Optional safety) also accept /auth/* directly -> preserve path
+  # Your frontend sometimes hits /auth/login without /api
+  location ^~ /auth/ {
+    proxy_http_version 1.1;
+    proxy_set_header Host              $$host;
+    proxy_set_header X-Real-IP         $$remote_addr;
+    proxy_set_header X-Forwarded-For   $$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $$scheme;
+    proxy_ssl_server_name on;
+
+    # no trailing slash -> preserve '/auth/...'
+    proxy_pass ${BACKEND_URL};
   }
 }
