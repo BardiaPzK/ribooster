@@ -5,53 +5,32 @@ server {
   root /usr/share/nginx/html;
   index index.html;
 
-  # SPA routing
+  # Single Page App routing
   location / {
-    try_files $$uri $$uri/ /index.html;
+    try_files $uri $uri/ /index.html;
   }
 
-  # health endpoints
-  location = /health      { return 200 "ok"; add_header Content-Type text/plain; }
-  location = /api/health  { return 200 "ok"; add_header Content-Type text/plain; }
+  # Health checks
+  location = /health { return 200 "ok"; add_header Content-Type text/plain; }
 
-  # common upstream settings
-  map $$http_upgrade $$connection_upgrade {
-    default upgrade;
-    ''      close;
-  }
-
-  # ==== /api/* -> backend (strip /api) ====
+  # Proxy API and AUTH calls to backend
   location ^~ /api/ {
-    rewrite ^/api/(.*)$ /$$1 break;
-
-    proxy_pass ${BACKEND_URL};
     proxy_http_version 1.1;
-
-    # make TLS/SNI + Host correct for backend
-    proxy_ssl_server_name on;
-    proxy_set_header Host $$proxy_host;
-
-    proxy_set_header X-Real-IP         $$remote_addr;
-    proxy_set_header X-Forwarded-For   $$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $$scheme;
-    proxy_set_header Upgrade           $$http_upgrade;
-    proxy_set_header Connection        $$connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass ${BACKEND_URL};
   }
 
-  # ==== /auth/* -> backend (strip /auth) ====
   location ^~ /auth/ {
-    rewrite ^/auth/(.*)$ /$$1 break;
-
-    proxy_pass ${BACKEND_URL};
     proxy_http_version 1.1;
-
-    proxy_ssl_server_name on;
-    proxy_set_header Host $$proxy_host;
-
-    proxy_set_header X-Real-IP         $$remote_addr;
-    proxy_set_header X-Forwarded-For   $$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $$scheme;
-    proxy_set_header Upgrade           $$http_upgrade;
-    proxy_set_header Connection        $$connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    rewrite ^/auth/(.*)$ /$1 break;
+    proxy_pass ${BACKEND_URL};
   }
 }
