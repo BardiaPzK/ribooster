@@ -9,17 +9,18 @@ RUN npm run build
 # ---- NGINX runtime ----
 FROM nginx:1.27-alpine
 
-# Add tools for debugging + env substitution
 RUN apk add --no-cache bash dos2unix
 
-# Copy built SPA
+# Copy built frontend
 COPY --from=build /app/dist/ /usr/share/nginx/html/
 
-# Copy nginx template
+# Copy NGINX template
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 
-# Set environment variable (will be replaced by Azure)
-ENV BACKEND_URL="https://ribooster-backend-app.azurewebsites.net"
+# Substitute environment variables into nginx config at startup
+CMD ["/bin/sh", "-c", "envsubst '${BACKEND_URL}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+
+# Optional default value (Azure will override)
+ENV BACKEND_URL="https://ribooster-backend-app.azurewebsites.net"
