@@ -2,19 +2,37 @@ server {
   listen 80 default_server;
   server_name _;
 
-  location = /health { add_header Content-Type text/plain; return 200 "OK\n"; }
-  location = /api/health { add_header Content-Type text/plain; return 200 "OK\n"; }
+  # Frontend health for Azure probes (HEAD/GET ok)
+  location = /health {
+    return 200 "OK";
+    add_header Content-Type text/plain;
+  }
 
+  # Make HEAD /api/health succeed even though backend only allows GET
+  location = /api/health {
+    proxy_method GET;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass $BACKEND_URL/health;
+  }
+
+  # Proxy all /api/* to backend, dropping the /api/ prefix
   location /api/ {
-    proxy_pass ${BACKEND_URL}/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+    client_max_body_size 16m;
+
+    # Important: the trailing slash here makes Nginx strip /api/
+    proxy_pass $BACKEND_URL/;
   }
 
-  root /usr/share/nginx/html;
-  index index.html;
-  location / { try_files $uri /index.html; }
+  # SPA fallback (safe even if you don’t ship an index.html)
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
 }

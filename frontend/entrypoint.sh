@@ -1,11 +1,13 @@
 #!/usr/bin/env sh
 set -eu
-TEMPLATE="/etc/nginx/conf.d/default.conf.template"
-TARGET="/etc/nginx/conf.d/default.conf"
 
-: "${BACKEND_URL:?BACKEND_URL is required}"
+if [ -z "${BACKEND_URL:-}" ]; then
+  echo "[entrypoint] ERROR: BACKEND_URL is not set" >&2
+  exit 1
+fi
 
-echo "[entrypoint] Using BACKEND_URL=${BACKEND_URL}"
-envsubst '$BACKEND_URL' < "$TEMPLATE" > "$TARGET"
-nginx -t
+# Render nginx from template
+envsubst '$BACKEND_URL' < /app/nginx.conf.template > /etc/nginx/conf.d/default.conf
+
+echo "[entrypoint] Using BACKEND_URL=$BACKEND_URL"
 exec nginx -g 'daemon off;'
