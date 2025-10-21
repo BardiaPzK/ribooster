@@ -1,16 +1,5 @@
-# frontend/entrypoint.sh
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 set -e
-
-# Fail fast if BACKEND_URL missing
-if [ -z "${BACKEND_URL}" ]; then
-  echo "[entrypoint] ERROR: BACKEND_URL is not set"; exit 1
-fi
-
-echo "[entrypoint] Using BACKEND_URL=${BACKEND_URL}"
-
-# Substitute env into nginx template -> real config
-envsubst '${BACKEND_URL}' < /etc/nginx/templates/nginx.conf.template > /etc/nginx/nginx.conf
-
-# Static assets already placed in /usr/share/nginx/html by Dockerfile build stage
+# Render template with BACKEND_URL into NGINX conf
+envsubst '\' < /etc/nginx/templates/nginx.conf.tmpl > /etc/nginx/conf.d/default.conf
 nginx -g 'daemon off;'
