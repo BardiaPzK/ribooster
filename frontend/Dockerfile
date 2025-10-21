@@ -1,8 +1,8 @@
 FROM nginx:1.27-alpine
 
 WORKDIR /app
-COPY frontend/nginx.conf.template /app/nginx.conf.template
-COPY frontend/entrypoint.sh /entrypoint.sh
+COPY nginx.conf.template /app/nginx.conf.template
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 80
