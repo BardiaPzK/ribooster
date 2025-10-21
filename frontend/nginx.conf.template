@@ -1,3 +1,4 @@
+# frontend/nginx.conf.template
 worker_processes auto;
 events { worker_connections 1024; }
 http {
@@ -19,8 +20,7 @@ http {
       try_files $uri /index.html;
     }
 
-    # IMPORTANT: Simple path-based proxy. This strips the /api/ prefix and forwards
-    # /api/<path> → <BACKEND_URL>/<path> for ALL methods (GET/POST/OPTIONS etc.).
+    # *** FIX: simple path-based proxy; no rewrites; handles POST/GET/OPTIONS
     location /api/ {
       proxy_pass ${BACKEND_URL}/;
       proxy_http_version 1.1;
