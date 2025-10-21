@@ -1,5 +1,14 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -e
-# Render template with BACKEND_URL into NGINX conf
-envsubst '\' < /etc/nginx/templates/nginx.conf.tmpl > /etc/nginx/conf.d/default.conf
-nginx -g 'daemon off;'
+
+if [ -z "${BACKEND_URL}" ]; then
+  echo "[entrypoint] ERROR: BACKEND_URL is not set"; exit 1
+fi
+
+echo "[entrypoint] Using BACKEND_URL=${BACKEND_URL}"
+
+# Render our template (this path exists in your repo)
+envsubst '${BACKEND_URL}' < /frontend/nginx.conf.template > /etc/nginx/conf.d/default.conf
+
+# Run nginx in foreground
+exec nginx -g 'daemon off;'

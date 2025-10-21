@@ -1,24 +1,26 @@
-# frontend/Dockerfile
-# Build the React app
-FROM node:20-slim AS build
+# ---------- build stage ----------
+FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
+
+COPY frontend/package*.json ./
 RUN npm ci
-COPY . .
+
+COPY frontend/ ./
 RUN npm run build
 
-# Runtime with NGINX
+# ---------- runtime stage ----------
 FROM nginx:1.27-alpine
-WORKDIR /
-# Copy built assets
-COPY --from=build /app/dist /usr/share/nginx/html
-# Template + entrypoint
-COPY nginx.conf.template /etc/nginx/templates/nginx.conf.template
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
-ENV BACKEND_URL=""
-ENV WEBSITES_PORT=80
+# envsubst for template rendering
+RUN apk add --no-cache gettext
+
+# static assets
+COPY --from=build /app/dist/ /usr/share/nginx/html/
+
+# our scripts/templates (exact paths you asked for)
+COPY frontend/entrypoint.sh /frontend/entrypoint.sh
+COPY frontend/nginx.conf.template /frontend/nginx.conf.template
+RUN chmod +x /frontend/entrypoint.sh
+
 EXPOSE 80
-
-CMD ["/entrypoint.sh"]
+ENTRYPOINT ["/frontend/entrypoint.sh"]

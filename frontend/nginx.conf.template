@@ -1,33 +1,55 @@
-# frontend/nginx.conf.template
-worker_processes auto;
-events { worker_connections 1024; }
-http {
-  include       /etc/nginx/mime.types;
-  default_type  application/octet-stream;
-  sendfile      on;
+# This file is included from nginx's http{} via conf.d/*.conf
+# Rendered by entrypoint.sh via envsubst (uses ${BACKEND_URL})
 
-  server {
-    listen 80;
-    server_name _;
+# Convert HEAD to GET only for /api/health so HEAD probes succeed
+map $request_uri $health_force_get {
+    default 0;
+    "/api/health" 1;
+}
 
-    root /usr/share/nginx/html;
+server {
+  listen 80 default_server;
+  server_name _;
 
-    # Health probe
-    location /health { return 200 "ok"; }
+  # Static SPA
+  root /usr/share/nginx/html;
+  index index.html;
 
-    # Serve SPA
-    location / {
-      try_files $uri /index.html;
-    }
+  client_max_body_size 25m;
+  sendfile on;
 
-    # *** FIX: simple path-based proxy; no rewrites; handles POST/GET/OPTIONS
-    location /api/ {
-      proxy_pass ${BACKEND_URL}/;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_set_header X-Forwarded-Proto $scheme;
-      proxy_set_header X-Forwarded-For $remote_addr;
-      proxy_set_header Connection "";
-    }
+  # Frontend health
+  location = /health {
+    return 200 "OK";
+    add_header Content-Type text/plain;
+  }
+
+  # === API PROXY ===
+  # Strip /api prefix and proxy to ${BACKEND_URL}
+  location ^~ /api/ {
+    rewrite ^/api/(.*)$ /$1 break;
+
+    proxy_http_version 1.1;
+    proxy_buffering off;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_read_timeout 300s;
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 300s;
+
+    # Force HEAD -> GET only for /api/health
+    # (map above sets $health_force_get=1 for that URI)
+    if ($health_force_get) { proxy_method GET; }
+
+    proxy_pass ${BACKEND_URL};
+  }
+
+  # SPA fallback
+  location / {
+    try_files $uri /index.html;
   }
 }
