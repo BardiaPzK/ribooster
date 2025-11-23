@@ -50,6 +50,10 @@ from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
 from .ai_helpdesk import run_helpdesk_completion
 
 
+from dataclasses import asdict
+
+
+
 # ───────────────────────── App setup ─────────────────────────
 
 app = FastAPI(title="ribooster API", version="0.2.0")
@@ -114,6 +118,12 @@ class LoginResponse(BaseModel):
     company_code: Optional[str] = None
     rib_exp_ts: Optional[int] = None
     rib_role: Optional[str] = None
+
+class OrgRowOut(BaseModel):
+    org: Dict[str, Any]
+    license: Dict[str, Any]
+    features: List[str]
+    requests_count: int
 
 
 class SessionCtx(BaseModel):
@@ -356,15 +366,73 @@ class AdminUpdateCompanyRequest(BaseModel):
     ai_api_key: Optional[str] = None
 
 
-@app.get("/api/admin/orgs", response_model=List[OrgListItem])
+@app.get("/api/admin/orgs", response_model=List[OrgRowOut])
 def admin_list_orgs(ctx: SessionCtx = Depends(require_admin)):
-    out: List[OrgListItem] = []
+    rows: List[OrgRowOut] = []
+    now = int(time.time())
+
     for org in storage.ORGS.values():
-        comp = next((c for c in storage.COMPANIES.values() if c.org_id == org.org_id), None)
-        metrics = storage.METRICS.get(org.org_id)
-        if comp:
-            out.append(OrgListItem(org=org, company=comp, metrics=metrics))
-    return out
+        # Convert org to plain dict (support both pydantic v1/v2 and dataclasses)
+        if hasattr(org, "model_dump"):
+            org_dict = org.model_dump()
+        elif hasattr(org, "dict"):
+            org_dict = org.dict()
+        else:
+            org_dict = asdict(org)
+
+        org_id = org_dict.get("org_id") or org_dict.get("id")
+        if not org_id:
+            # Skip anything weird
+            continue
+
+        # Try to reuse existing license on the org if present
+        raw_license = org_dict.get("license")
+        if isinstance(raw_license, dict):
+            license_dict = {
+                "org_id": raw_license.get("org_id") or org_id,
+                "plan": raw_license.get("plan", "monthly"),
+                "active": raw_license.get("active", True),
+                "current_period_end": raw_license.get(
+                    "current_period_end", now + 30 * 24 * 60 * 60
+                ),
+            }
+        else:
+            # Fallback: basic license stub
+            license_dict = {
+                "org_id": org_id,
+                "plan": "monthly",
+                "active": True,
+                "current_period_end": now + 30 * 24 * 60 * 60,
+            }
+
+        # Features can be stored either as dict[str, bool] or as list[str]
+        features_src = org_dict.get("features") or {}
+        if isinstance(features_src, dict):
+            feature_list = sorted(
+                [name for name, enabled in features_src.items() if enabled]
+            )
+        elif isinstance(features_src, list):
+            feature_list = features_src
+        else:
+            feature_list = []
+
+        # Requests count from metrics, if you track it
+        metrics = getattr(storage, "METRICS", {}).get(org_id)
+        req_count = getattr(metrics, "total_requests", 0) if metrics is not None else 0
+
+        rows.append(
+            OrgRowOut(
+                org=org_dict,
+                license=license_dict,
+                features=feature_list,
+                requests_count=req_count,
+            )
+        )
+
+    # Sort by org name for nicer display
+    rows.sort(key=lambda r: (r.org.get("name") or "").lower())
+    return rows
+
 
 
 @app.post("/api/admin/orgs", response_model=OrgListItem)

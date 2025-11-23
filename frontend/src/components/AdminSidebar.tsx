@@ -1,48 +1,41 @@
-// frontend/src/components/AdminSidebar.tsx
-import React from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { clearAuthSession } from "../lib/auth";
+import { NavLink } from "react-router-dom";
+import { LayoutDashboard, Building2, Ticket, Settings } from "lucide-react";
 
-export const AdminSidebar: React.FC = () => {
-  const loc = useLocation();
-  const nav = useNavigate();
-  const isActive = (p: string) => loc.pathname === p;
+type NavItemProps = {
+  to: string;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+};
 
-  const logout = () => {
-    clearAuthSession();
-    nav("/");
-  };
-
+function NavItem({ to, icon: Icon, label }: NavItemProps) {
   return (
-    <aside className="w-64 bg-slate-900/80 border-r border-slate-800/80 p-4 flex flex-col rounded-2xl">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-500 to-violet-500" />
-        <div className="font-semibold text-lg">Admin Console</div>
-      </div>
-      <nav className="space-y-2 flex-1">
-        <Link
-          to="/admin"
-          className={`block px-3 py-2 rounded-xl text-sm ${
-            isActive("/admin") ? "bg-indigo-600 text-white" : "hover:bg-slate-800/80"
-          }`}
-        >
-          Overview
-        </Link>
-        <Link
-          to="/admin/orgs"
-          className={`block px-3 py-2 rounded-xl text-sm ${
-            isActive("/admin/orgs") ? "bg-indigo-600 text-white" : "hover:bg-slate-800/80"
-          }`}
-        >
-          Organizations
-        </Link>
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        [
+          "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium",
+          isActive
+            ? "bg-primary/10 text-primary"
+            : "text-muted-foreground hover:bg-muted",
+        ].join(" ")
+      }
+    >
+      <Icon className="h-4 w-4" />
+      <span>{label}</span>
+    </NavLink>
+  );
+}
+
+export function AdminSidebar() {
+  return (
+    <aside className="w-64 border-r bg-card flex flex-col">
+      <div className="p-4 font-semibold text-lg">Admin Console</div>
+      <nav className="flex-1 space-y-1 px-2">
+        <NavItem to="/admin/overview" icon={LayoutDashboard} label="Overview" />
+        <NavItem to="/admin/orgs" icon={Building2} label="Organizations" />
+        <NavItem to="/admin/tickets" icon={Ticket} label="Tickets" />
+        <NavItem to="/admin/settings" icon={Settings} label="Settings" />
       </nav>
-      <button
-        onClick={logout}
-        className="mt-auto px-3 py-2 rounded-xl text-sm bg-slate-800 border border-slate-700 hover:bg-slate-700"
-      >
-        Logout
-      </button>
     </aside>
   );
-};
+}
