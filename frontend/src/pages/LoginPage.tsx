@@ -1,7 +1,4 @@
-"use client";
-
 import React, { useState } from "react";
-import { useRouter } from "next/navigation";
 import { api } from "../lib/api";
 
 export default function LoginPage() {
@@ -9,8 +6,6 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
-
-  const router = useRouter();
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,44 +18,40 @@ export default function LoginPage() {
         password
       });
 
-      // Save session
       localStorage.setItem("token", res.token);
-      localStorage.setItem("org_id", res.org_id);
       localStorage.setItem("username", res.username);
-      localStorage.setItem("display_name", res.display_name || res.username);
-      localStorage.setItem("org_name", res.org_name || "");
+      localStorage.setItem("display_name", res.display_name ?? res.username);
       localStorage.setItem("is_admin", String(res.is_admin));
 
-      if (res.rib_exp_ts) {
-        localStorage.setItem("rib_exp_ts", String(res.rib_exp_ts));
-      }
-      if (res.rib_role) {
-        localStorage.setItem("rib_role", String(res.rib_role));
-      }
+      if (res.org_id) localStorage.setItem("org_id", res.org_id);
+      if (res.company_id) localStorage.setItem("company_id", res.company_id);
+      if (res.rib_exp_ts) localStorage.setItem("rib_exp_ts", String(res.rib_exp_ts));
+      if (res.rib_role) localStorage.setItem("rib_role", res.rib_role);
 
-      // Redirect
       if (res.is_admin) {
-        window.location.href = "/admin/overview";   // more reliable in Docker
+        window.location.href = "/admin/overview";
       } else {
         window.location.href = "/dashboard";
       }
-
     } catch (e: any) {
       setErr(e?.message || "Login failed");
     }
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white shadow-soft rounded-2xl p-6">
-        <h1 className="text-2xl font-semibold mb-4">Sign in to ribooster</h1>
+    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-gray-50">
+      <div className="w-full max-w-md bg-white rounded-xl shadow-md p-6">
+        <h1 className="text-2xl font-semibold mb-4 text-center">
+          Sign in to ribooster
+        </h1>
 
-        <form onSubmit={submit} className="space-y-3">
+        <form onSubmit={submit} className="space-y-4">
+
           <div>
-            <label className="block text-sm font-medium mb-1">Organization Code</label>
+            <label className="block text-sm mb-1">Organization Code</label>
             <input
-              className="w-full rounded-xl border px-3 py-2 outline-none focus:ring-2 focus:ring-brand"
-              placeholder="Admin or AA-123"
+              className="w-full border px-3 py-2 rounded-lg"
+              placeholder="Admin or JBI-999"
               value={accessCode}
               onChange={(e) => setAccessCode(e.target.value)}
               required
@@ -68,9 +59,9 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Username</label>
+            <label className="block text-sm mb-1">Username</label>
             <input
-              className="w-full rounded-xl border px-3 py-2 outline-none focus:ring-2 focus:ring-brand"
+              className="w-full border px-3 py-2 rounded-lg"
               placeholder="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -79,10 +70,10 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Password</label>
+            <label className="block text-sm mb-1">Password</label>
             <input
               type="password"
-              className="w-full rounded-xl border px-3 py-2 outline-none focus:ring-2 focus:ring-brand"
+              className="w-full border px-3 py-2 rounded-lg"
               placeholder="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -90,13 +81,13 @@ export default function LoginPage() {
             />
           </div>
 
-          {err && <div className="text-red-600 text-sm">{err}</div>}
+          {err && <div className="text-sm text-red-600">{err}</div>}
 
           <button
             type="submit"
-            className="w-full bg-brand hover:bg-brand-dark text-white rounded-xl py-2 font-medium transition"
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-2"
           >
-            Continue
+            Sign in
           </button>
         </form>
       </div>
