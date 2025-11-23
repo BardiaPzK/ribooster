@@ -1,392 +1,718 @@
-# backend/app/main.py
 """
-FastAPI app for ribooster:
-- /api/auth/login : Admin + RIB user login
-- /api/auth/me    : Current session
-- /api/admin/...  : Admin console (orgs, metrics)
+backend/app/main.py
 
-Frontend (React/Vite) is served as static files under /app.
+FastAPI entrypoint for ribooster.
+
+Focus:
+- Login (Admin + Org/RIB users)
+- Organizations & companies management (admin)
+- Metrics overview
+- Tickets
+- Helpdesk AI backend
+- Simple project list + backup job structure
+
+Static frontend is served from /app (Vite build).
+
+IMPORTANT:
+- Admin login: CompanyCode = "Admin", username= "admin", password= "admin"
+- User login: CompanyCode = ribooster company code (e.g. "JBI-999", "TNG-100"),
+  RIB username/password are forwarded to the RIB server.
 """
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
-from typing import Optional
+from typing import List, Optional, Literal, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+import requests
+from fastapi import FastAPI, HTTPException, Depends, Header, Body, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from .config import settings, BASE_DIR
 from .models import (
-    LoginRequest,
-    LoginResponse,
-    MeResponse,
+    License,
     Organization,
     Company,
     Session,
-    CreateOrgRequest,
-    UpdateOrgRequest,
-    OrgListItem,
+    RIBSession,
+    MetricCounters,
+    Ticket,
+    HelpdeskConversation,
+    HelpdeskMessage,
+    ProjectBackupJob,
 )
-from .storage import (
-    load_state,
-    save_state,
-    ORGS,
-    COMPANIES,
-    COMPANY_BY_CODE,
-    METRICS,
-    get_org_by_access_code,
-    get_org,
-    store_session,
-    get_session,
-    record_login_success,
-    record_login_failed,
-    record_route_hit,
-    upsert_org_and_company,
-    metrics_overview,
-)
-from .rib_client import rib_login
+from . import storage
+from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
+from .ai_helpdesk import run_helpdesk_completion
 
 
-app = FastAPI(title=settings.APP_NAME)
+# ───────────────────────── App setup ─────────────────────────
 
+app = FastAPI(title="ribooster API", version="0.2.0")
 
-# ---- CORS (for dev; in prod backend + frontend are same origin) ----
+origins = ["*"]  # adjust later if needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can restrict later
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-# ---- Static frontend (dist is copied to /app/frontend_dist in Dockerfile) ----
-
-FRONTEND_DIST = BASE_DIR / "frontend_dist"
-if FRONTEND_DIST.exists():
-    app.mount("/app", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
-
-
-@app.get("/", include_in_schema=False)
-async def root():
-    # Redirect root to frontend under /app
-    return RedirectResponse(url="/app/")
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend-dist")
+if os.path.isdir(FRONTEND_DIR):
+    app.mount(
+        "/app",
+        StaticFiles(directory=FRONTEND_DIR, html=True),
+        name="frontend",
+    )
 
 
-# ---- Startup ----
+# ───────────────────────── Auth helpers ─────────────────────────
 
-@app.on_event("startup")
-def on_startup() -> None:
-    load_state()
-
-
-# ---- Helpers ----
-
-def _now() -> int:
-    return int(time.time())
+ADMIN_ACCESS_CODE = "Admin"
+ADMIN_USERS = {
+    "admin": "admin",
+    # add more if needed later
+}
 
 
-def _new_session_token() -> str:
-    return uuid.uuid4().hex
+class LoginRequest(BaseModel):
+    company_code: str
+    username: str
+    password: str
 
 
-def _session_timestamps() -> tuple[int, int]:
-    now = _now()
-    return now, now + settings.SESSION_TTL_SECONDS
+class LoginResponse(BaseModel):
+    token: str
+    is_admin: bool
+    username: str
+    display_name: str
+    org_id: Optional[str] = None
+    org_name: Optional[str] = None
+    company_id: Optional[str] = None
+    company_code: Optional[str] = None
+    rib_exp_ts: Optional[int] = None
+    rib_role: Optional[str] = None
 
 
-def current_session(
-    authorization: Optional[str] = Header(None),
-) -> Session:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    token = authorization.split(" ", 1)[1].strip()
-    sess = get_session(token)
-    if not sess:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return sess
+def _jwt_payload(tok: str) -> Dict[str, Any]:
+    import base64
+    import json
+
+    try:
+        parts = tok.split(".")
+        if len(parts) < 2:
+            return {}
+        payload_b64 = parts[1]
+        padding = (-len(payload_b64)) % 4
+        if padding:
+            payload_b64 += "=" * padding
+        return json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {}
 
 
-def current_admin(sess: Session = Depends(current_session)) -> Session:
-    if not sess.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-    return sess
+def _display_from_jwt(tok: str, fallback: str) -> str:
+    pl = _jwt_payload(tok)
+    for k in ("given_name", "name", "unique_name", "preferred_username", "email", "sub"):
+        v = pl.get(k)
+        if isinstance(v, str) and v.strip():
+            if k == "name" and " " in v:
+                return v.split(" ")[0].strip()
+            return v.strip()
+    return fallback
 
 
-# ---- Auth endpoints ----
+class SessionCtx(BaseModel):
+    token: str
+    user_id: str
+    org_id: Optional[str]
+    company_id: Optional[str]
+    username: str
+    display_name: str
+    is_admin: bool
+
+
+def _session_from_token(token: str) -> SessionCtx:
+    s = storage.get_session(token)
+    if not s:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
+    now = int(time.time())
+    if s.expires_at and s.expires_at < now:
+        storage.delete_session(token)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+    return SessionCtx(
+        token=s.token,
+        user_id=s.user_id,
+        org_id=s.org_id,
+        company_id=s.company_id,
+        username=s.username,
+        display_name=s.display_name,
+        is_admin=s.is_admin,
+    )
+
+
+def require_session(Authorization: Optional[str] = Header(None)) -> SessionCtx:
+    if not Authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
+    parts = Authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
+    token = parts[1]
+    return _session_from_token(token)
+
+
+def require_admin(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
+    if not ctx.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return ctx
+
+
+def require_org_user(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
+    if ctx.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Org user required")
+    if not ctx.org_id or not ctx.company_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing org/company on session")
+    return ctx
+
+
+# ───────────────────────── Health ─────────────────────────
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "time": int(time.time())}
+
+
+# ───────────────────────── Login ─────────────────────────
+
 
 @app.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest) -> LoginResponse:
-    """
-    Login.
-    - If company_code == 'Admin' (case-insensitive) → admin login.
-    - Else → RIB login for the mapped company & org.
-    """
-    code = payload.company_code.strip()
+def login(payload: LoginRequest):
+    company_code = payload.company_code.strip()
     username = payload.username.strip()
     password = payload.password
 
-    if not code or not username or not password:
-        raise HTTPException(status_code=400, detail="Missing credentials")
+    if not company_code or not username or not password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing fields")
 
-    # Admin path
-    if code.lower() == settings.ADMIN_ACCESS_CODE.lower():
-        expected = settings.ADMIN_USERS.get(username)
+    # ─── Admin login ───────────────────────────────────────
+    if company_code.lower() == ADMIN_ACCESS_CODE.lower():
+        expected = ADMIN_USERS.get(username)
         if not expected or expected != password:
-            record_login_failed(org_id=None)
-            raise HTTPException(status_code=401, detail="Invalid admin credentials")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
-        token = _new_session_token()
-        created_at, expires_at = _session_timestamps()
+        now = int(time.time())
         sess = Session(
-            token=token,
-            username=username,
-            is_admin=True,
+            token=uuid.uuid4().hex + uuid.uuid4().hex,
+            user_id=f"admin-{username}",
             org_id=None,
             company_id=None,
-            created_at=created_at,
-            expires_at=expires_at,
+            username=username,
+            display_name="ribooster admin",
+            is_admin=True,
+            rib_session=None,
+            created_at=now,
+            expires_at=now + 8 * 3600,
         )
-        store_session(sess)
-
+        storage.save_session(sess)
         return LoginResponse(
-            token=token,
+            token=sess.token,
             is_admin=True,
             username=username,
             display_name="ribooster admin",
         )
 
-    # Organization user path
-    org_and_company = get_org_by_access_code(code)
-    if not org_and_company:
-        record_login_failed(org_id=None)
-        raise HTTPException(status_code=404, detail="Unknown company code")
-
-    org, company = org_and_company
-
-    # License check
-    now = _now()
-    if org.license.current_period_end < now:
-        org.license.active = False
-        save_state()
-    if not org.license.active or org.deactivated:
-        record_login_failed(org_id=org.org_id)
-        raise HTTPException(status_code=403, detail="Organization license inactive or access disabled")
-
-    # Optional user whitelist
-    if company.allowed_users and username not in company.allowed_users:
-        record_login_failed(org_id=org.org_id)
-        raise HTTPException(status_code=403, detail="User not allowed for this company")
-
-    # RIB login
+    # ─── Org user login with RIB ───────────────────────────
     try:
-        result = rib_login(
-            base_url=company.base_url,
-            rib_company_code=company.rib_company_code,
-            username=username,
-            password=password,
-        )
-    except Exception as ex:  # httpx.HTTPError or RuntimeError
-        record_login_failed(org_id=org.org_id)
-        raise HTTPException(status_code=401, detail=f"RIB login failed: {ex}")
+        org, company = storage.get_org_and_company_by_code(company_code)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown company code")
 
-    # Create session
-    token = _new_session_token()
-    created_at, expires_at = _session_timestamps()
+    lic = org.license
+    now = int(time.time())
+    if not lic.active or lic.current_period_end < now:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License inactive or expired")
+
+    # optional allowed users check
+    if company.allowed_users and username not in company.allowed_users:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed for this company")
+
+    # login to RIB
+    auth = Auth(AuthCfg(host=company.base_url, company=company.rib_company_code))
+    try:
+        rib_sess = auth.login(username, password)
+    except requests.HTTPError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"RIB login failed: {e.response.text}") from e
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"RIB login failed: {e}") from e
+
+    # derive display name from JWT if possible
+    display_name = _display_from_jwt(rib_sess.access_token, username)
+
+    # create backend session
     sess = Session(
-        token=token,
-        username=username,
-        is_admin=False,
+        token=uuid.uuid4().hex + uuid.uuid4().hex,
+        user_id=f"{org.org_id}:{username}",
         org_id=org.org_id,
         company_id=company.company_id,
-        created_at=created_at,
-        expires_at=expires_at,
-        rib_token=result.token,
-        rib_exp_ts=result.exp_ts,
-        rib_role=result.secure_client_role,
-        display_name=result.display_name,
+        username=username,
+        display_name=display_name,
+        is_admin=False,
+        rib_session=rib_sess,
+        created_at=now,
+        expires_at=now + 8 * 3600,
     )
-    store_session(sess)
+    storage.save_session(sess)
 
-    # Update org metadata
-    org.last_login_ts = now
-    record_login_success(org_id=org.org_id)
-    record_route_hit(org_id=org.org_id, route_name="auth.login")
-    save_state()
+    storage.record_request(org.org_id, "auth.login")
 
     return LoginResponse(
-        token=token,
+        token=sess.token,
         is_admin=False,
         username=username,
-        display_name=result.display_name,
+        display_name=display_name,
         org_id=org.org_id,
         org_name=org.name,
         company_id=company.company_id,
         company_code=company.code,
-        rib_exp_ts=result.exp_ts,
-        rib_role=result.secure_client_role,
+        rib_exp_ts=rib_sess.exp_ts,
+        rib_role=rib_sess.secure_client_role,
     )
 
 
-@app.get("/api/auth/me", response_model=MeResponse)
-def me(sess: Session = Depends(current_session)) -> MeResponse:
-    """
-    Return basic info about current session.
-    """
-    org_name = None
-    company_code = None
-    if sess.org_id:
-        org = get_org(sess.org_id)
-        if org:
-            org_name = org.name
-    if sess.company_id:
-        company = COMPANIES.get(sess.company_id)
-        if company:
-            company_code = company.code
-
-    if sess.org_id:
-        record_route_hit(org_id=sess.org_id, route_name="auth.me")
-
-    return MeResponse(
-        username=sess.username,
-        display_name=sess.display_name,
-        is_admin=sess.is_admin,
-        org_id=sess.org_id,
-        org_name=org_name,
-        company_id=sess.company_id,
-        company_code=company_code,
-        rib_exp_ts=sess.rib_exp_ts,
-        rib_role=sess.rib_role,
-    )
+# ───────────────────────── Auth / Me ─────────────────────────
 
 
-# ---- Admin endpoints ----
+@app.get("/api/auth/me")
+def me(ctx: SessionCtx = Depends(require_session)):
+    return ctx
 
-@app.get("/api/admin/orgs", response_model=list[OrgListItem])
-def admin_list_orgs(_: Session = Depends(current_admin)) -> list[OrgListItem]:
-    """
-    List all organizations + their companies + metrics.
-    """
-    items: list[OrgListItem] = []
-    for org in ORGS.values():
-        # we assume one company per org for now
-        company = next((c for c in COMPANIES.values() if c.org_id == org.org_id), None)
-        if not company:
-            continue
-        metrics = METRICS.get(org.org_id)
-        if not metrics:
-            from .models import MetricCounters
-            metrics = MetricCounters()
-        items.append(
-            OrgListItem(org=org, company=company, metrics=metrics)
-        )
-    return items
+
+# ───────────────────────── Admin: Orgs & Companies ─────────────────────────
+
+
+class OrgListItem(BaseModel):
+    org: Organization
+    company: Company
+    metrics: Optional[MetricCounters] = None  # allow None to avoid validation error
+
+
+class AdminCreateOrgRequest(BaseModel):
+    name: str
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    notes: Optional[str] = None
+    plan: Literal["monthly", "yearly"] = "monthly"
+    current_period_end: int
+    base_url: str
+    rib_company_code: str
+    company_code: str
+    allowed_users: List[str] = Field(default_factory=list)
+
+
+class AdminUpdateOrgRequest(BaseModel):
+    name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    notes: Optional[str] = None
+    plan: Optional[Literal["monthly", "yearly"]] = None
+    active: Optional[bool] = None
+    current_period_end: Optional[int] = None
+    features: Optional[Dict[str, bool]] = None
+
+
+class AdminUpdateCompanyRequest(BaseModel):
+    base_url: Optional[str] = None
+    rib_company_code: Optional[str] = None
+    company_code: Optional[str] = None
+    allowed_users: Optional[List[str]] = None
+    ai_api_key: Optional[str] = None
+
+
+@app.get("/api/admin/orgs", response_model=List[OrgListItem])
+def admin_list_orgs(ctx: SessionCtx = Depends(require_admin)):
+    out: List[OrgListItem] = []
+    for org in storage.ORGS.values():
+        # choose first company for list view
+        comp = next((c for c in storage.COMPANIES.values() if c.org_id == org.org_id), None)
+        metrics = storage.METRICS.get(org.org_id)
+        if comp:
+            out.append(OrgListItem(org=org, company=comp, metrics=metrics))
+    return out
 
 
 @app.post("/api/admin/orgs", response_model=OrgListItem)
-def admin_create_org(payload: CreateOrgRequest, admin: Session = Depends(current_admin)) -> OrgListItem:
-    """
-    Create new org + company in one step.
-    """
-    # Check uniqueness of access_code
-    if payload.access_code.lower() in COMPANY_BY_CODE:
-        raise HTTPException(status_code=400, detail="access_code already exists")
-
-    now = _now()
-    org_id = f"org_{uuid.uuid4().hex[:8]}"
-    company_id = f"cmp_{uuid.uuid4().hex[:8]}"
-
-    from .models import License
-    license_obj = License(
-        plan=payload.plan,
-        active=True,
-        current_period_end=int(time.time()) + 30 * 24 * 60 * 60,  # 30 days from now
-    )
-
-    org = Organization(
-        org_id=org_id,
+def admin_create_org(payload: AdminCreateOrgRequest, ctx: SessionCtx = Depends(require_admin)):
+    org, company = storage.create_org_and_company(
         name=payload.name,
-        access_code=payload.access_code,
         contact_email=payload.contact_email,
         contact_phone=payload.contact_phone,
         notes=payload.notes,
-        created_by=admin.username,
-        created_at=now,
-        license=license_obj,
-        features=[
-            "projects.backup",
-            "ai.helpdesk",
-        ],
-    )
-    company = Company(
-        company_id=company_id,
-        org_id=org_id,
-        code=payload.access_code,
+        plan=payload.plan,
+        current_period_end=payload.current_period_end,
         base_url=payload.base_url,
         rib_company_code=payload.rib_company_code,
+        code=payload.company_code,
         allowed_users=payload.allowed_users,
     )
-
-    upsert_org_and_company(org=org, company=company)
-
-    return OrgListItem(
-        org=org,
-        company=company,
-        metrics=METRICS.get(org_id),
-    )
-
-
-@app.put("/api/admin/orgs/{org_id}", response_model=OrgListItem)
-def admin_update_org(org_id: str, payload: UpdateOrgRequest, _: Session = Depends(current_admin)) -> OrgListItem:
-    org = ORGS.get(org_id)
-    if not org:
-        raise HTTPException(status_code=404, detail="Org not found")
-
-    # Update scalar fields
-    if payload.name is not None:
-        org.name = payload.name
-    if payload.contact_email is not None:
-        org.contact_email = payload.contact_email
-    if payload.contact_phone is not None:
-        org.contact_phone = payload.contact_phone
-    if payload.notes is not None:
-        org.notes = payload.notes
-    if payload.deactivated is not None:
-        org.deactivated = payload.deactivated
-
-    # License
-    if payload.plan is not None:
-        org.license.plan = payload.plan
-    if payload.active is not None:
-        org.license.active = payload.active
-    if payload.current_period_end is not None:
-        org.license.current_period_end = payload.current_period_end
-
-    # Features
-    if payload.features is not None:
-        org.features = payload.features
-
-    # Allowed users (company)
-    company = next((c for c in COMPANIES.values() if c.org_id == org_id), None)
-    if not company:
-        raise HTTPException(status_code=500, detail="Company missing for org")
-    if payload.allowed_users is not None:
-        company.allowed_users = payload.allowed_users
-
-    upsert_org_and_company(org=org, company=company)
-    metrics = METRICS.get(org_id)
+    metrics = storage.METRICS.get(org.org_id, None)
     return OrgListItem(org=org, company=company, metrics=metrics)
 
 
-@app.get("/api/admin/metrics/overview")
-def admin_metrics_overview(_: Session = Depends(current_admin)):
+@app.put("/api/admin/orgs/{org_id}", response_model=Organization)
+def admin_update_org(org_id: str, payload: AdminUpdateOrgRequest, ctx: SessionCtx = Depends(require_admin)):
+    org = storage.ORGS.get(org_id)
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
+
+    data = org.model_copy(update={})
+    if payload.name is not None:
+        data.name = payload.name
+    if payload.contact_email is not None:
+        data.contact_email = payload.contact_email
+    if payload.contact_phone is not None:
+        data.contact_phone = payload.contact_phone
+    if payload.notes is not None:
+        data.notes = payload.notes
+    if payload.plan is not None:
+        data.license.plan = payload.plan
+    if payload.current_period_end is not None:
+        data.license.current_period_end = payload.current_period_end
+    if payload.active is not None:
+        data.license.active = payload.active
+    if payload.features is not None:
+        # merge feature toggles
+        new_feats = dict(data.features)
+        new_feats.update(payload.features)
+        data.features = new_feats
+
+    storage.update_org(data)
+    return data
+
+
+@app.put("/api/admin/companies/{company_id}", response_model=Company)
+def admin_update_company(company_id: str, payload: AdminUpdateCompanyRequest, ctx: SessionCtx = Depends(require_admin)):
+    comp = storage.COMPANIES.get(company_id)
+    if not comp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    data = comp.model_copy(update={})
+    if payload.base_url is not None:
+        data.base_url = payload.base_url
+    if payload.rib_company_code is not None:
+        data.rib_company_code = payload.rib_company_code
+    if payload.company_code is not None:
+        data.code = payload.company_code
+    if payload.allowed_users is not None:
+        data.allowed_users = payload.allowed_users
+    if payload.ai_api_key is not None:
+        data.ai_api_key = payload.ai_api_key
+
+    storage.update_company(data)
+    return data
+
+
+# ───────────────────────── Admin: Metrics ─────────────────────────
+
+
+class MetricsOverviewItem(BaseModel):
+    org_id: str
+    org_name: str
+    total_requests: int
+    total_rib_calls: int
+    by_feature: Dict[str, int]
+
+
+@app.get("/api/admin/metrics/overview", response_model=List[MetricsOverviewItem])
+def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin)):
+    out: List[MetricsOverviewItem] = []
+    for org_id, org in storage.ORGS.items():
+        mc = storage.METRICS.get(org_id, MetricCounters())
+        out.append(
+            MetricsOverviewItem(
+                org_id=org_id,
+                org_name=org.name,
+                total_requests=mc.total_requests,
+                total_rib_calls=mc.total_rib_calls,
+                by_feature=mc.per_feature,
+            )
+        )
+    out.sort(key=lambda x: x.total_requests, reverse=True)
+    return out
+
+
+# ───────────────────────── Tickets (User side) ─────────────────────────
+
+
+class CreateTicketRequest(BaseModel):
+    subject: str
+    priority: Literal["low", "normal", "high", "urgent"] = "normal"
+    text: str
+
+
+class TicketListItem(BaseModel):
+    ticket_id: str
+    subject: str
+    priority: str
+    status: str
+    created_at: int
+    updated_at: int
+
+
+@app.get("/api/user/tickets", response_model=List[TicketListItem])
+def user_list_tickets(ctx: SessionCtx = Depends(require_org_user)):
+    items: List[TicketListItem] = []
+    for t in storage.TICKETS.values():
+        if t.org_id == ctx.org_id and t.user_id == ctx.user_id:
+            items.append(
+                TicketListItem(
+                    ticket_id=t.ticket_id,
+                    subject=t.subject,
+                    priority=t.priority,
+                    status=t.status,
+                    created_at=t.created_at,
+                    updated_at=t.updated_at,
+                )
+            )
+    items.sort(key=lambda x: x.updated_at, reverse=True)
+    return items
+
+
+@app.post("/api/user/tickets", response_model=Ticket)
+def user_create_ticket(payload: CreateTicketRequest, ctx: SessionCtx = Depends(require_org_user)):
+    t = storage.create_ticket(
+        org_id=ctx.org_id,
+        company_id=ctx.company_id,
+        user_id=ctx.user_id,
+        subject=payload.subject,
+        priority=payload.priority,
+        text=payload.text,
+    )
+    storage.record_request(ctx.org_id, "tickets.create")
+    return t
+
+
+@app.get("/api/user/tickets/{ticket_id}", response_model=Ticket)
+def user_get_ticket(ticket_id: str, ctx: SessionCtx = Depends(require_org_user)):
+    t = storage.TICKETS.get(ticket_id)
+    if not t or t.org_id != ctx.org_id or t.user_id != ctx.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    return t
+
+
+class TicketReplyRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/user/tickets/{ticket_id}/reply", response_model=Ticket)
+def user_reply_ticket(ticket_id: str, payload: TicketReplyRequest, ctx: SessionCtx = Depends(require_org_user)):
+    t = storage.TICKETS.get(ticket_id)
+    if not t or t.org_id != ctx.org_id or t.user_id != ctx.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    t = storage.add_ticket_message(ticket_id, "user", payload.text)
+    storage.record_request(ctx.org_id, "tickets.reply")
+    return t
+
+
+# ───────────────────────── Tickets (Admin side) ─────────────────────────
+
+
+class AdminTicketUpdateRequest(BaseModel):
+    status: Optional[Literal["open", "in_progress", "done"]] = None
+    priority: Optional[Literal["low", "normal", "high", "urgent"]] = None
+    text: Optional[str] = None
+
+
+@app.get("/api/admin/tickets", response_model=List[Ticket])
+def admin_list_tickets(ctx: SessionCtx = Depends(require_admin)):
+    # simple: return all tickets (you can filter by org later)
+    return sorted(storage.TICKETS.values(), key=lambda t: t.updated_at, reverse=True)
+
+
+@app.post("/api/admin/tickets/{ticket_id}/reply", response_model=Ticket)
+def admin_reply_ticket(ticket_id: str, payload: AdminTicketUpdateRequest, ctx: SessionCtx = Depends(require_admin)):
+    t = storage.TICKETS.get(ticket_id)
+    if not t:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+
+    if payload.text:
+        t = storage.add_ticket_message(ticket_id, "admin", payload.text)
+
+    if payload.status is not None:
+        t.status = payload.status
+    if payload.priority is not None:
+        t.priority = payload.priority
+
+    storage.TICKETS[ticket_id] = t
+    storage.save_state()
+    return t
+
+
+# ───────────────────────── Helpdesk (AI Assistant) ─────────────────────────
+
+
+class HelpdeskChatRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    text: str
+
+
+class HelpdeskConversationOut(HelpdeskConversation):
+    pass
+
+
+def _ensure_feature(ctx: SessionCtx, feature_key: str) -> None:
+    org = storage.ORGS.get(ctx.org_id or "")
+    if not org:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org missing")
+    if not org.features.get(feature_key, False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Feature not enabled for org")
+
+
+@app.get("/api/user/helpdesk/conversations", response_model=List[HelpdeskConversationOut])
+def list_helpdesk_conversations(ctx: SessionCtx = Depends(require_org_user)):
+    _ensure_feature(ctx, "ai.helpdesk")
+    convs = storage.get_user_conversations(ctx.org_id, ctx.company_id, ctx.user_id)
+    convs.sort(key=lambda c: c.updated_at, reverse=True)
+    return convs
+
+
+@app.post("/api/user/helpdesk/chat", response_model=HelpdeskConversationOut)
+async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(require_org_user)):
+    _ensure_feature(ctx, "ai.helpdesk")
+
+    company = storage.COMPANIES.get(ctx.company_id or "")
+    if not company:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company not found")
+    if not company.ai_api_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="AI key not configured for this company")
+
+    # load or create conversation
+    if payload.conversation_id:
+        if payload.conversation_id not in storage.HELPDESK_CONVERSATIONS:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        conv = storage.get_conversation(payload.conversation_id)
+        if conv.org_id != ctx.org_id or conv.company_id != ctx.company_id or conv.user_id != ctx.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation not owned by user")
+    else:
+        conv = storage.create_conversation(ctx.org_id, ctx.company_id, ctx.user_id)
+
+    # add user message
+    now = int(time.time())
+    user_msg = HelpdeskMessage(
+        message_id=f"msg_{uuid.uuid4().hex[:10]}",
+        timestamp=now,
+        sender="user",
+        text=payload.text,
+    )
+    conv.messages.append(user_msg)
+
+    # call AI backend
+    try:
+        answer = await run_helpdesk_completion(company.ai_api_key, conv, payload.text)
+    except Exception as e:
+        # rollback last message on error
+        conv.messages.pop()
+        conv.updated_at = int(time.time())
+        storage.save_conversation(conv)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Helpdesk error: {e}")
+
+    ai_msg = HelpdeskMessage(
+        message_id=f"msg_{uuid.uuid4().hex[:10]}",
+        timestamp=int(time.time()),
+        sender="ai",
+        text=answer,
+    )
+    conv.messages.append(ai_msg)
+    conv.updated_at = int(time.time())
+    storage.save_conversation(conv)
+
+    storage.record_request(ctx.org_id, "helpdesk.chat", feature="ai.helpdesk")
+
+    return conv
+
+
+# ───────────────────────── Projects & Backup (simple) ─────────────────────────
+
+
+class ProjectOut(BaseModel):
+    id: str
+    name: str
+
+
+@app.get("/api/user/projects", response_model=List[ProjectOut])
+def list_projects(ctx: SessionCtx = Depends(require_org_user)):
+    _ensure_feature(ctx, "projects.backup")
+
+    sess = storage.get_session(ctx.token)
+    if not sess or not sess.rib_session:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No RIB session in backend")
+
+    auth = auth_from_rib_session(sess.rib_session)
+    api = ProjectApi(auth)
+    try:
+        rows = api.all()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"RIB projects error: {e}")
+
+    storage.record_rib_call(ctx.org_id, "projects.list")
+
+    out: List[ProjectOut] = []
+    for r in rows:
+        pid = str(r.get("Id"))
+        name = (r.get("ProjectName") or "").strip()
+        out.append(ProjectOut(id=pid, name=name))
+    return out
+
+
+class BackupRequest(BaseModel):
+    project_id: str
+    project_name: str
+    include_estimates: bool = True
+    include_lineitems: bool = True
+    include_resources: bool = True
+    include_activities: bool = True
+
+
+@app.post("/api/user/projects/backup", response_model=ProjectBackupJob)
+def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_user)):
     """
-    Simple analytics summary across orgs.
+    For now this creates a job record and logs a simple message.
+    You can later extend it to fetch data and write a ZIP file.
     """
-    ov = metrics_overview()
-    # Convert to primitive dict for frontend
-    return ov.model_dump()
+    _ensure_feature(ctx, "projects.backup")
+
+    job = storage.create_backup_job(
+        org_id=ctx.org_id,
+        company_id=ctx.company_id,
+        user_id=ctx.user_id,
+        project_id=payload.project_id,
+        project_name=payload.project_name,
+        options={
+            "include_estimates": payload.include_estimates,
+            "include_lineitems": payload.include_lineitems,
+            "include_resources": payload.include_resources,
+            "include_activities": payload.include_activities,
+        },
+    )
+
+    # simple synchronous placeholder: just mark as completed for now
+    job.status = "completed"
+    job.log.append("Backup job placeholder completed (no real ZIP yet).")
+    job.updated_at = int(time.time())
+    storage.save_backup_job(job)
+
+    storage.record_request(ctx.org_id, "projects.backup", feature="projects.backup")
+    return job
+
+
+@app.get("/api/user/projects/backup/{job_id}", response_model=ProjectBackupJob)
+def get_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user)):
+    job = storage.BACKUP_JOBS.get(job_id)
+    if not job or job.org_id != ctx.org_id or job.company_id != ctx.company_id or job.user_id != ctx.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return job
