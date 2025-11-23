@@ -4,16 +4,14 @@
 FROM node:20-alpine AS frontend-build
 WORKDIR /app
 
-# Copy package.json (mandatory)
+# Copy package.json + tsconfig + optional lock file
 COPY frontend/package.json ./
-
-# Copy package-lock.json ONLY IF IT EXISTS using a wildcard
-# This does NOT fail if the file is missing
+COPY frontend/tsconfig.json ./
 COPY frontend/*.json ./
 
 RUN npm install
 
-# Copy full frontend
+# Copy frontend source
 COPY frontend/ .
 
 RUN npm run build
@@ -25,19 +23,19 @@ RUN npm run build
 FROM python:3.11-slim AS backend
 WORKDIR /app
 
-# Install system deps
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy backend
+# Copy backend source
 COPY backend/ ./backend
 
-# Copy frontend build output
+# Copy built frontend into backend
 COPY --from=frontend-build /app/dist ./frontend-dist
 
-# Install Python deps
+# Install backend dependencies
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 EXPOSE 8000
