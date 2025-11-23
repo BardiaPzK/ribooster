@@ -275,15 +275,35 @@ def login(payload: LoginRequest):
     try:
         rib_sess = auth.login(username, password)
     except requests.HTTPError as e:
+        # Try to read response text (may contain HTML)
+        text = ""
+        try:
+            text = e.response.text or ""
+        except Exception:
+            text = ""
+
+        # Detect the scheduled environment access HTML page
+        if "Scheduled Environment Access Notice" in text:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "RIB login failed: The target RIB 4.0 environment is currently "
+                    "not available outside its scheduled access window. "
+                    "Please try again later or contact your RIB implementation manager."
+                ),
+            )
+
+        # Generic fallback for other HTTP errors
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"RIB login failed: {e.response.text}",
+            detail=f"RIB login failed: {text or str(e)}",
         ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"RIB login failed: {e}",
+            detail=f"RIB login failed: {str(e)}",
         ) from e
+
 
     # derive display name from JWT if possible
     display_name = _display_from_jwt(rib_sess.access_token, username)

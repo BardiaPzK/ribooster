@@ -1,41 +1,53 @@
+// frontend/src/components/AdminSidebar.tsx
+import React from "react";
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Building2, Ticket, Settings } from "lucide-react";
 
 type NavItemProps = {
   to: string;
-  icon: React.ComponentType<{ className?: string }>;
   label: string;
 };
 
-function NavItem({ to, icon: Icon, label }: NavItemProps) {
+const navLinkBase =
+  "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors";
+
+function NavItem({ to, label }: NavItemProps) {
   return (
     <NavLink
       to={to}
       className={({ isActive }) =>
         [
-          "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium",
+          navLinkBase,
           isActive
-            ? "bg-primary/10 text-primary"
-            : "text-muted-foreground hover:bg-muted",
+            ? "bg-indigo-600/10 text-indigo-400"
+            : "text-slate-400 hover:bg-slate-800 hover:text-slate-100",
         ].join(" ")
       }
     >
-      <Icon className="h-4 w-4" />
+      <span className="inline-block w-2 h-2 rounded-full bg-slate-500" />
       <span>{label}</span>
     </NavLink>
   );
 }
 
-export function AdminSidebar() {
+export const AdminSidebar: React.FC = () => {
   return (
-    <aside className="w-64 border-r bg-card flex flex-col">
-      <div className="p-4 font-semibold text-lg">Admin Console</div>
-      <nav className="flex-1 space-y-1 px-2">
-        <NavItem to="/admin/overview" icon={LayoutDashboard} label="Overview" />
-        <NavItem to="/admin/orgs" icon={Building2} label="Organizations" />
-        <NavItem to="/admin/tickets" icon={Ticket} label="Tickets" />
-        <NavItem to="/admin/settings" icon={Settings} label="Settings" />
+    <aside className="w-64 border-r border-slate-800 bg-slate-950/70 backdrop-blur flex flex-col">
+      <div className="p-4 border-b border-slate-800">
+        <div className="text-xs uppercase tracking-widest text-slate-500">
+          ribooster
+        </div>
+        <div className="text-lg font-semibold text-slate-100">
+          Admin Console
+        </div>
+      </div>
+      <nav className="flex-1 px-2 py-3 space-y-1">
+        <NavItem to="/admin/overview" label="Overview" />
+        <NavItem to="/admin/orgs" label="Organizations" />
+        <NavItem to="/admin/tickets" label="Tickets" />
+        <NavItem to="/admin/settings" label="Settings" />
       </nav>
     </aside>
   );
-}
+};
+
+export default AdminSidebar;
