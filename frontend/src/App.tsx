@@ -1,9 +1,9 @@
 // frontend/src/App.tsx
 import React from "react";
-import { AppRouter } from "./router";
+import { AppRoutes } from "./router";
 
 const App: React.FC = () => {
-  return <AppRouter />;
+  return <AppRoutes />;
 };
 
 export default App;

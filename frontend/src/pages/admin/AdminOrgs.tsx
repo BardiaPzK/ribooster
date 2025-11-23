@@ -1,243 +1,191 @@
 // frontend/src/pages/admin/AdminOrgs.tsx
 import React, { useEffect, useState } from "react";
-import { api } from "../../lib/api";
+import { api, OrgListItem } from "../../lib/api";
 
-type OrgRow = {
-  org: any;
-  company: any;
-  metrics: { total_requests: number; logins_success: number; logins_failed: number };
-};
-
-const featureList = ["projects.backup", "ai.helpdesk", "csv.import", "ai.query_studio"];
-
-export const AdminOrgs: React.FC = () => {
-  const [rows, setRows] = useState<OrgRow[]>([]);
-  const [loading, setLoading] = useState(false);
+const AdminOrgs: React.FC = () => {
+  const [orgs, setOrgs] = useState<OrgListItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
+  const [name, setName] = useState("");
+  const [companyCode, setCompanyCode] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [ribCompanyCode, setRibCompanyCode] = useState("999");
+  const [contactEmail, setContactEmail] = useState("");
+  const [allowedUsersStr, setAllowedUsersStr] = useState("");
+
+  const load = () => {
     setLoading(true);
-    setError(null);
-    try {
-      const data = await api.adminListOrgs();
-      setRows(data);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load organizations");
-    } finally {
-      setLoading(false);
-    }
+    api.admin
+      .listOrgs()
+      .then((data) => setOrgs(data))
+      .catch((e: any) => setError(e?.message || "Failed to load orgs"))
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => {
     load();
   }, []);
 
-  const onCreate: React.FormEventHandler<HTMLFormElement> = async (e) => {
+  const createOrg = async (e: React.FormEvent) => {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const body = {
-      name: fd.get("name") as string,
-      access_code: fd.get("access_code") as string,
-      base_url: fd.get("base_url") as string,
-      rib_company_code: fd.get("rib_company_code") as string,
-      contact_email: fd.get("contact_email") || undefined,
-      contact_phone: fd.get("contact_phone") || undefined,
-      notes: fd.get("notes") || undefined,
-      plan: (fd.get("plan") as string) || "monthly",
-      allowed_users: ((fd.get("allowed_users") as string) || "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    };
-    await api.adminCreateOrg(body);
-    (e.target as HTMLFormElement).reset();
-    await load();
-  };
-
-  const toggleFeature = async (row: OrgRow, feature: string) => {
-    const has = (row.org.features || []).includes(feature);
-    const next = has
-      ? (row.org.features || []).filter((f: string) => f !== feature)
-      : [...(row.org.features || []), feature];
-    await api.adminUpdateOrg(row.org.org_id, { features: next });
-    await load();
-  };
-
-  const toggleActive = async (row: OrgRow) => {
-    await api.adminUpdateOrg(row.org.org_id, {
-      active: !row.org.license.active
-    });
-    await load();
+    setError(null);
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const payload = {
+        name: name.trim(),
+        contact_email: contactEmail.trim() || undefined,
+        contact_phone: undefined,
+        notes: undefined,
+        plan: "monthly" as const,
+        current_period_end: now + 365 * 24 * 3600,
+        base_url: baseUrl.trim(),
+        rib_company_code: ribCompanyCode.trim(),
+        company_code: companyCode.trim(),
+        allowed_users: allowedUsersStr
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      };
+      await api.admin.createOrg(payload);
+      setName("");
+      setCompanyCode("");
+      setBaseUrl("");
+      setRibCompanyCode("999");
+      setContactEmail("");
+      setAllowedUsersStr("");
+      load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to create organization");
+    }
   };
 
   return (
-    <div className="space-y-6">
-      <section className="card p-6 space-y-4">
-        <h1 className="text-2xl font-semibold mb-2">Organizations</h1>
-        <p className="text-sm text-slate-400">
-          Create, update and monitor organizations, company URLs, permitted users, license
-          state and services (for now visual only).
-        </p>
-        <form onSubmit={onCreate} className="grid md:grid-cols-3 gap-3 mt-4">
+    <div className="space-y-4">
+      <div className="text-lg font-semibold text-slate-100">Organizations</div>
+      {error && <div className="text-sm text-red-400">{error}</div>}
+
+      <form
+        onSubmit={createOrg}
+        className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs"
+      >
+        <div className="space-y-1">
+          <div className="font-medium text-slate-200">New organization</div>
           <input
-            name="name"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm"
-            placeholder="Organization name"
+            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="Org name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
             required
           />
           <input
-            name="access_code"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm"
-            placeholder="Company Code (login)"
-            required
-          />
-          <select
-            name="plan"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm"
-          >
-            <option value="monthly">Monthly</option>
-            <option value="yearly">Yearly</option>
-          </select>
-          <input
-            name="base_url"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm md:col-span-2"
-            placeholder="RIB base URL (services)"
-            required
-          />
-          <input
-            name="rib_company_code"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm"
-            placeholder="RIB company code (e.g. 1000)"
-            required
-          />
-          <input
-            name="contact_email"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm"
+            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
             placeholder="Contact email"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <div className="font-medium text-slate-200">RIB connection</div>
+          <input
+            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="Company code (login)"
+            value={companyCode}
+            onChange={(e) => setCompanyCode(e.target.value)}
+            required
           />
           <input
-            name="contact_phone"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm"
-            placeholder="Contact phone"
+            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="RIB base URL"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            required
           />
           <input
-            name="notes"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm md:col-span-2"
-            placeholder="Internal notes"
+            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="RIB company code (e.g. 999)"
+            value={ribCompanyCode}
+            onChange={(e) => setRibCompanyCode(e.target.value)}
           />
-          <input
-            name="allowed_users"
-            className="rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm md:col-span-3"
-            placeholder="Permitted RIB usernames (comma separated)"
+        </div>
+        <div className="space-y-1">
+          <div className="font-medium text-slate-200">Users</div>
+          <textarea
+            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+            rows={3}
+            placeholder="Allowed usernames (comma separated). Leave empty = all users."
+            value={allowedUsersStr}
+            onChange={(e) => setAllowedUsersStr(e.target.value)}
           />
-          <div className="md:col-span-3 flex justify-end">
+          <div className="flex justify-end">
             <button
               type="submit"
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-medium"
+              className="mt-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5"
             >
-              Create organization
+              Create org
             </button>
           </div>
-        </form>
-      </section>
+        </div>
+      </form>
 
-      <section className="card p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Existing organizations</h2>
-          <button
-            onClick={load}
-            className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-sm"
-          >
-            Refresh
-          </button>
-        </div>
-        {loading && <div className="text-sm text-slate-400 mb-2">Loading…</div>}
-        {error && <div className="text-sm text-red-400 mb-2">{error}</div>}
-        <div className="space-y-4">
-          {rows.map((row) => (
-            <div
-              key={row.org.org_id}
-              className="border border-slate-700/80 rounded-2xl p-4 space-y-3 bg-slate-950/40"
-            >
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <div>
-                  <div className="font-semibold">{row.org.name}</div>
-                  <div className="text-xs text-slate-400">
-                    Org ID: {row.org.org_id} · Company Code:{" "}
-                    <span className="font-mono">{row.company.code}</span>
-                  </div>
-                  <div className="text-xs text-slate-400">
-                    {row.company.base_url} · RIB company {row.company.rib_company_code}
-                  </div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    Contact: {row.org.contact_email || "-"} ·{" "}
-                    {row.org.contact_phone || "-"}
-                  </div>
-                </div>
-                <div className="flex gap-6 items-center">
-                  <div>
-                    <div className="text-xs uppercase text-slate-400">Plan</div>
-                    <div className="text-sm font-medium">{row.org.license.plan}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase text-slate-400">License</div>
-                    <button
-                      onClick={() => toggleActive(row)}
-                      className={`px-3 py-1 rounded-xl text-xs font-medium ${
-                        row.org.license.active
-                          ? "bg-emerald-600/80"
-                          : "bg-rose-700/80"
-                      }`}
-                    >
-                      {row.org.license.active ? "Active" : "Inactive"}
-                    </button>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase text-slate-400">Requests</div>
-                    <div className="text-sm font-medium">
-                      {row.metrics.total_requests ?? 0}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div>
-                <div className="text-xs uppercase text-slate-400 mb-1">Features</div>
-                <div className="flex flex-wrap gap-2">
-                  {featureList.map((f) => {
-                    const enabled = (row.org.features || []).includes(f);
-                    return (
-                      <button
-                        key={f}
-                        onClick={() => toggleFeature(row, f)}
-                        className={`px-3 py-1 rounded-full text-xs border ${
-                          enabled
-                            ? "bg-indigo-600 text-white border-indigo-500"
-                            : "bg-slate-900 border-slate-700"
-                        }`}
-                      >
-                        {enabled ? "On" : "Off"} · {f}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs uppercase text-slate-400 mb-1">
-                  Permitted users
-                </div>
-                <div className="text-xs text-slate-300">
-                  {(row.company.allowed_users || []).length
-                    ? row.company.allowed_users.join(", ")
-                    : "No explicit restrictions (all RIB users allowed)."}
-                </div>
-              </div>
-            </div>
-          ))}
-          {!rows.length && !loading && (
-            <div className="text-sm text-slate-400">No organizations yet.</div>
-          )}
-        </div>
-      </section>
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 text-xs">
+        <div className="font-medium mb-2 text-slate-200">Existing orgs</div>
+        {loading ? (
+          <div className="text-slate-500">Loading…</div>
+        ) : orgs.length === 0 ? (
+          <div className="text-slate-500">No organizations yet.</div>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full text-left">
+              <thead className="text-slate-400 border-b border-slate-800">
+                <tr>
+                  <th className="py-1 pr-2">Org</th>
+                  <th className="py-1 pr-2">Company code</th>
+                  <th className="py-1 pr-2">RIB URL</th>
+                  <th className="py-1 pr-2">Features</th>
+                  <th className="py-1 pr-2">License</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orgs.map((item) => (
+                  <tr
+                    key={item.org.org_id}
+                    className="border-b border-slate-900/60 align-top"
+                  >
+                    <td className="py-1 pr-2 text-slate-100">
+                      {item.org.name}
+                    </td>
+                    <td className="py-1 pr-2">{item.company.code}</td>
+                    <td className="py-1 pr-2 text-slate-300">
+                      {item.company.base_url}
+                    </td>
+                    <td className="py-1 pr-2 text-slate-300">
+                      {Object.entries(item.org.features).map(([k, v]) => (
+                        <div key={k}>
+                          <span
+                            className={
+                              v ? "text-emerald-400 font-medium" : "text-slate-500"
+                            }
+                          >
+                            {v ? "●" : "○"}
+                          </span>{" "}
+                          {k}
+                        </div>
+                      ))}
+                    </td>
+                    <td className="py-1 pr-2 text-slate-300">
+                      {item.org.license.plan} –{" "}
+                      {item.org.license.active ? "active" : "inactive"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
+
+export default AdminOrgs;

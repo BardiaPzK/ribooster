@@ -1,27 +1,16 @@
-"""
-backend/app/models.py
-
-Domain models for ribooster:
-- Organizations, Companies, Licenses, Sessions
-- Metrics
-- Tickets (user <-> admin)
-- Helpdesk (user <-> AI)
-- Project backup jobs
-"""
-
+# backend/app/models.py
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Literal
+from typing import Dict, List, Optional, Literal, Any
 from pydantic import BaseModel, Field
 
 
-# ───────────────────────── License / Features ─────────────────────────
-
+# ───────────────────────── Core domain models ─────────────────────────
 
 class License(BaseModel):
     plan: Literal["monthly", "yearly"] = "monthly"
     active: bool = True
-    current_period_end: int  # unix timestamp seconds
+    current_period_end: int
 
 
 class Organization(BaseModel):
@@ -31,66 +20,55 @@ class Organization(BaseModel):
     contact_phone: Optional[str] = None
     notes: Optional[str] = None
     license: License
-    # feature flags like: "projects.backup", "ai.helpdesk"
+    # feature flags like: {"projects.backup": True, "ai.helpdesk": True}
     features: Dict[str, bool] = Field(default_factory=dict)
 
 
 class Company(BaseModel):
     company_id: str
     org_id: str
-    # ribooster company code used on login form (e.g. "TNG-100")
-    code: str
-    # RIB base URL (…/itwo40/services)
-    base_url: str
-    # RIB company code (e.g. "999", "1000")
-    rib_company_code: str
-    # list of allowed RIB usernames
+    name: str
+    code: str  # company code used for login (e.g. "TNG-100")
+    base_url: str  # RIB host URL
+    rib_company_code: str  # RIB company code (e.g. "999")
     allowed_users: List[str] = Field(default_factory=list)
-    # optional API key for AI services, specific to this company
+    # OpenAI API key used for helpdesk etc.
     ai_api_key: Optional[str] = None
 
 
-# ───────────────────────── Sessions ─────────────────────────
-
+# ───────────────────────── RIB session & backend session ─────────────────────────
 
 class RIBSession(BaseModel):
     access_token: str
-    secure_client_role: str
+    exp_ts: int
+    secure_client_role: Optional[str] = None
     host: str
     company_code: str
-    exp_ts: int  # unix seconds
+    username: str
 
 
 class Session(BaseModel):
     token: str
     user_id: str
-    org_id: str
-    company_id: Optional[str] = None
     username: str
     display_name: str
     is_admin: bool = False
-    rib_session: Optional[RIBSession] = None
+    org_id: Optional[str] = None
+    company_id: Optional[str] = None
     created_at: int
     expires_at: int
+    rib_session: Optional[RIBSession] = None
 
 
 # ───────────────────────── Metrics ─────────────────────────
 
-
 class MetricCounters(BaseModel):
     total_requests: int = 0
-    # per route (e.g. "auth.login", "admin.orgs.list")
-    per_route: Dict[str, int] = Field(default_factory=dict)
-    # per feature (e.g. "projects.backup", "ai.helpdesk")
-    per_feature: Dict[str, int] = Field(default_factory=dict)
-    # total RIB API calls
     total_rib_calls: int = 0
-    # per RIB feature
-    rib_calls_by_feature: Dict[str, int] = Field(default_factory=dict)
+    per_feature: Dict[str, int] = Field(default_factory=dict)
 
 
-# ───────────────────────── Tickets (user <-> admin) ─────────────────────────
-
+# ───────────────────────── Tickets ─────────────────────────
 
 class TicketMessage(BaseModel):
     message_id: str
@@ -102,8 +80,8 @@ class TicketMessage(BaseModel):
 class Ticket(BaseModel):
     ticket_id: str
     org_id: str
-    company_id: Optional[str] = None
-    user_id: Optional[str] = None
+    company_id: str
+    user_id: str
     subject: str
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
     status: Literal["open", "in_progress", "done"] = "open"
@@ -112,8 +90,7 @@ class Ticket(BaseModel):
     messages: List[TicketMessage] = Field(default_factory=list)
 
 
-# ───────────────────────── Helpdesk (user <-> AI) ─────────────────────────
-
+# ───────────────────────── Helpdesk ─────────────────────────
 
 class HelpdeskMessage(BaseModel):
     message_id: str
@@ -132,8 +109,7 @@ class HelpdeskConversation(BaseModel):
     messages: List[HelpdeskMessage] = Field(default_factory=list)
 
 
-# ───────────────────────── Project Backup ─────────────────────────
-
+# ───────────────────────── Project backup ─────────────────────────
 
 class ProjectBackupJob(BaseModel):
     job_id: str
@@ -142,9 +118,8 @@ class ProjectBackupJob(BaseModel):
     user_id: str
     project_id: str
     project_name: str
-    options: Dict[str, bool] = Field(default_factory=dict)
     status: Literal["pending", "running", "completed", "failed"] = "pending"
-    log: List[str] = Field(default_factory=list)
     created_at: int
     updated_at: int
-    download_path: Optional[str] = None
+    log: List[str] = Field(default_factory=list)
+    options: Dict[str, Any] = Field(default_factory=dict)

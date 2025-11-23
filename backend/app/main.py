@@ -1,30 +1,20 @@
 # backend/app/main.py
+from __future__ import annotations
 
 """
 FastAPI entrypoint for ribooster.
 
-Focus:
-- Login (Admin + Org/RIB users)
-- Organizations & companies management (admin)
-- Metrics overview
-- Tickets
-- Helpdesk AI backend
-- Simple project list + backup job structure
-
-Static frontend is served from /app (Vite build).
-
-IMPORTANT:
-- Admin login: CompanyCode = "Admin", username= "admin", password= "admin"
-- User login: CompanyCode = ribooster company code (e.g. "JBI-999", "TNG-100"),
-  RIB username/password are forwarded to the RIB server.
+- Admin login: CompanyCode = "Admin", username = "admin", password = "admin"
+- User login: Company code = RIB company (e.g. "TNG-100"), username/password forwarded to RIB.
 """
 
-from __future__ import annotations
-
+import base64
+import json
 import os
 import time
 import uuid
-from typing import List, Optional, Literal, Dict, Any
+from dataclasses import dataclass
+from typing import Dict, Any, List, Optional, Literal
 
 import requests
 from fastapi import FastAPI, HTTPException, Depends, Header, Body, status
@@ -37,7 +27,7 @@ from .models import (
     License,
     Organization,
     Company,
-    Session,          # session model from models.py
+    Session,
     RIBSession,
     MetricCounters,
     Ticket,
@@ -50,38 +40,28 @@ from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
 from .ai_helpdesk import run_helpdesk_completion
 
 
-from dataclasses import asdict
-
-
-
 # ───────────────────────── App setup ─────────────────────────
 
-app = FastAPI(title="ribooster API", version="0.2.0")
+app = FastAPI(title="ribooster API", version="0.3.0")
 
-origins = ["*"]  # adjust later if needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # adjust later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-# ───────────────────────── Static Frontend ─────────────────────────
-
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "frontend-dist")
 
 if os.path.isdir(FRONTEND_DIR):
 
-    # Serve asset files
     app.mount(
         "/app/assets",
         StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")),
         name="assets",
     )
 
-    # Serve index.html for all /app routes
     @app.get("/app", include_in_schema=False)
     @app.get("/app/", include_in_schema=False)
     @app.get("/app/{full_path:path}", include_in_schema=False)
@@ -92,57 +72,26 @@ if os.path.isdir(FRONTEND_DIR):
         return {"detail": "index.html not found"}
 
 
-# ───────────────────────── Auth helpers ─────────────────────────
+# ───────────────────────── Session context ─────────────────────────
 
 ADMIN_ACCESS_CODE = "Admin"
 ADMIN_USERS = {
     "admin": "admin",
-    # add more if needed later
 }
 
 
-class LoginRequest(BaseModel):
-    company_code: str
-    username: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    token: str
-    is_admin: bool
-    username: str
-    display_name: str
-    org_id: Optional[str] = None
-    org_name: Optional[str] = None
-    company_id: Optional[str] = None
-    company_code: Optional[str] = None
-    rib_exp_ts: Optional[int] = None
-    rib_role: Optional[str] = None
-
-class OrgRowOut(BaseModel):
-    org: Dict[str, Any]
-    license: Dict[str, Any]
-    features: List[str]
-    requests_count: int
-
-
-class SessionCtx(BaseModel):
-    """
-    Lightweight session context returned to frontend and used in dependencies.
-    """
+@dataclass
+class SessionCtx:
     token: str
     user_id: str
-    org_id: Optional[str] = None
-    company_id: Optional[str] = None
     username: str
     display_name: str
     is_admin: bool
+    org_id: Optional[str] = None
+    company_id: Optional[str] = None
 
 
 def _jwt_payload(tok: str) -> Dict[str, Any]:
-    import base64
-    import json
-
     try:
         parts = tok.split(".")
         if len(parts) < 2:
@@ -168,21 +117,21 @@ def _display_from_jwt(tok: str, fallback: str) -> str:
 
 
 def _session_from_token(token: str) -> SessionCtx:
-    s = storage.get_session(token)
-    if not s:
+    sess = storage.get_session(token)
+    if not sess:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
     now = int(time.time())
-    if s.expires_at and s.expires_at < now:
+    if sess.expires_at and sess.expires_at < now:
         storage.delete_session(token)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
     return SessionCtx(
-        token=s.token,
-        user_id=s.user_id,
-        org_id=s.org_id,
-        company_id=s.company_id,
-        username=s.username,
-        display_name=s.display_name,
-        is_admin=s.is_admin,
+        token=sess.token,
+        user_id=sess.user_id,
+        username=sess.username,
+        display_name=sess.display_name,
+        is_admin=sess.is_admin,
+        org_id=sess.org_id,
+        company_id=sess.company_id,
     )
 
 
@@ -192,8 +141,8 @@ def require_session(Authorization: Optional[str] = Header(None)) -> SessionCtx:
     parts = Authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
-    token = parts[1]
-    return _session_from_token(token)
+    tok = parts[1]
+    return _session_from_token(tok)
 
 
 def require_admin(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
@@ -217,7 +166,26 @@ def health():
     return {"status": "ok", "time": int(time.time())}
 
 
-# ───────────────────────── Login ─────────────────────────
+# ───────────────────────── Auth ─────────────────────────
+
+class LoginRequest(BaseModel):
+    company_code: str
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    is_admin: bool
+    username: str
+    display_name: str
+    org_id: Optional[str] = None
+    org_name: Optional[str] = None
+    company_id: Optional[str] = None
+    company_code: Optional[str] = None
+    rib_exp_ts: Optional[int] = None
+    rib_role: Optional[str] = None
+
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest):
@@ -228,24 +196,25 @@ def login(payload: LoginRequest):
     if not company_code or not username or not password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing fields")
 
-    # ─── Admin login ───────────────────────────────────────
+    now = int(time.time())
+
+    # Admin login
     if company_code.lower() == ADMIN_ACCESS_CODE.lower():
         expected = ADMIN_USERS.get(username)
         if not expected or expected != password:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
-        now = int(time.time())
         sess = Session(
             token=uuid.uuid4().hex + uuid.uuid4().hex,
-            user_id=f"admin-{username}",
-            org_id="admin",
-            company_id=None,
+            user_id=f"admin:{username}",
             username=username,
             display_name="ribooster admin",
             is_admin=True,
-            rib_session=None,
+            org_id=None,
+            company_id=None,
             created_at=now,
             expires_at=now + 8 * 3600,
+            rib_session=None,
         )
         storage.save_session(sess)
         return LoginResponse(
@@ -255,34 +224,29 @@ def login(payload: LoginRequest):
             display_name="ribooster admin",
         )
 
-    # ─── Org user login with RIB ───────────────────────────
+    # Org user login via RIB
     try:
         org, company = storage.get_org_and_company_by_code(company_code)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown company code")
 
-    lic = org.license
-    now = int(time.time())
+    lic: License = org.license
     if not lic.active or lic.current_period_end < now:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License inactive or expired")
 
-    # optional allowed users check
     if company.allowed_users and username not in company.allowed_users:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed for this company")
 
-    # login to RIB
     auth = Auth(AuthCfg(host=company.base_url, company=company.rib_company_code))
     try:
         rib_sess = auth.login(username, password)
     except requests.HTTPError as e:
-        # Try to read response text (may contain HTML)
         text = ""
         try:
             text = e.response.text or ""
         except Exception:
             text = ""
 
-        # Detect the scheduled environment access HTML page
         if "Scheduled Environment Access Notice" in text:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -293,7 +257,6 @@ def login(payload: LoginRequest):
                 ),
             )
 
-        # Generic fallback for other HTTP errors
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"RIB login failed: {text or str(e)}",
@@ -304,29 +267,32 @@ def login(payload: LoginRequest):
             detail=f"RIB login failed: {str(e)}",
         ) from e
 
-
-    # derive display name from JWT if possible
     display_name = _display_from_jwt(rib_sess.access_token, username)
 
-    # create backend session
-    sess = Session(
+    backend_sess = Session(
         token=uuid.uuid4().hex + uuid.uuid4().hex,
         user_id=f"{org.org_id}:{username}",
-        org_id=org.org_id,
-        company_id=company.company_id,
         username=username,
         display_name=display_name,
         is_admin=False,
-        rib_session=rib_sess,
+        org_id=org.org_id,
+        company_id=company.company_id,
         created_at=now,
         expires_at=now + 8 * 3600,
+        rib_session=RIBSession(
+            access_token=rib_sess.access_token,
+            exp_ts=rib_sess.exp_ts,
+            secure_client_role=rib_sess.secure_client_role,
+            host=company.base_url,
+            company_code=company.rib_company_code,
+            username=username,
+        ),
     )
-    storage.save_session(sess)
-
+    storage.save_session(backend_sess)
     storage.record_request(org.org_id, "auth.login")
 
     return LoginResponse(
-        token=sess.token,
+        token=backend_sess.token,
         is_admin=False,
         username=username,
         display_name=display_name,
@@ -339,19 +305,51 @@ def login(payload: LoginRequest):
     )
 
 
-# ───────────────────────── Auth / Me ─────────────────────────
+class MeResponse(BaseModel):
+    token: str
+    user_id: str
+    username: str
+    display_name: str
+    is_admin: bool
+    org_id: Optional[str] = None
+    company_id: Optional[str] = None
 
-@app.get("/api/auth/me")
+
+@app.get("/api/auth/me", response_model=MeResponse)
 def me(ctx: SessionCtx = Depends(require_session)):
-    return ctx
+    return MeResponse(
+        token=ctx.token,
+        user_id=ctx.user_id,
+        username=ctx.username,
+        display_name=ctx.display_name,
+        is_admin=ctx.is_admin,
+        org_id=ctx.org_id,
+        company_id=ctx.company_id,
+    )
 
 
-# ───────────────────────── Admin: Orgs & Companies ─────────────────────────
+# ───────────────────────── User context ─────────────────────────
+
+class UserContext(BaseModel):
+    org: Organization
+    company: Company
+
+
+@app.get("/api/user/context", response_model=UserContext)
+def user_context(ctx: SessionCtx = Depends(require_org_user)):
+    org = storage.ORGS.get(ctx.org_id or "")
+    comp = storage.COMPANIES.get(ctx.company_id or "")
+    if not org or not comp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org or company not found")
+    return UserContext(org=org, company=comp)
+
+
+# ───────────────────────── Admin: orgs & metrics ─────────────────────────
 
 class OrgListItem(BaseModel):
     org: Organization
     company: Company
-    metrics: Optional[MetricCounters] = None  # allow None
+    metrics: Optional[MetricCounters] = None
 
 
 class AdminCreateOrgRequest(BaseModel):
@@ -386,78 +384,20 @@ class AdminUpdateCompanyRequest(BaseModel):
     ai_api_key: Optional[str] = None
 
 
-@app.get("/api/admin/orgs", response_model=List[OrgRowOut])
+@app.get("/api/admin/orgs", response_model=List[OrgListItem])
 def admin_list_orgs(ctx: SessionCtx = Depends(require_admin)):
-    rows: List[OrgRowOut] = []
-    now = int(time.time())
-
+    out: List[OrgListItem] = []
     for org in storage.ORGS.values():
-        # Convert org to plain dict (support both pydantic v1/v2 and dataclasses)
-        if hasattr(org, "model_dump"):
-            org_dict = org.model_dump()
-        elif hasattr(org, "dict"):
-            org_dict = org.dict()
-        else:
-            org_dict = asdict(org)
-
-        org_id = org_dict.get("org_id") or org_dict.get("id")
-        if not org_id:
-            # Skip anything weird
-            continue
-
-        # Try to reuse existing license on the org if present
-        raw_license = org_dict.get("license")
-        if isinstance(raw_license, dict):
-            license_dict = {
-                "org_id": raw_license.get("org_id") or org_id,
-                "plan": raw_license.get("plan", "monthly"),
-                "active": raw_license.get("active", True),
-                "current_period_end": raw_license.get(
-                    "current_period_end", now + 30 * 24 * 60 * 60
-                ),
-            }
-        else:
-            # Fallback: basic license stub
-            license_dict = {
-                "org_id": org_id,
-                "plan": "monthly",
-                "active": True,
-                "current_period_end": now + 30 * 24 * 60 * 60,
-            }
-
-        # Features can be stored either as dict[str, bool] or as list[str]
-        features_src = org_dict.get("features") or {}
-        if isinstance(features_src, dict):
-            feature_list = sorted(
-                [name for name, enabled in features_src.items() if enabled]
-            )
-        elif isinstance(features_src, list):
-            feature_list = features_src
-        else:
-            feature_list = []
-
-        # Requests count from metrics, if you track it
-        metrics = getattr(storage, "METRICS", {}).get(org_id)
-        req_count = getattr(metrics, "total_requests", 0) if metrics is not None else 0
-
-        rows.append(
-            OrgRowOut(
-                org=org_dict,
-                license=license_dict,
-                features=feature_list,
-                requests_count=req_count,
-            )
-        )
-
-    # Sort by org name for nicer display
-    rows.sort(key=lambda r: (r.org.get("name") or "").lower())
-    return rows
-
+        comp = next((c for c in storage.COMPANIES.values() if c.org_id == org.org_id), None)
+        metrics = storage.METRICS.get(org.org_id)
+        if comp:
+            out.append(OrgListItem(org=org, company=comp, metrics=metrics))
+    return out
 
 
 @app.post("/api/admin/orgs", response_model=OrgListItem)
 def admin_create_org(payload: AdminCreateOrgRequest, ctx: SessionCtx = Depends(require_admin)):
-    org, company = storage.create_org_and_company(
+    org, comp = storage.create_org_and_company(
         name=payload.name,
         contact_email=payload.contact_email,
         contact_phone=payload.contact_phone,
@@ -469,8 +409,8 @@ def admin_create_org(payload: AdminCreateOrgRequest, ctx: SessionCtx = Depends(r
         code=payload.company_code,
         allowed_users=payload.allowed_users,
     )
-    metrics = storage.METRICS.get(org.org_id, None)
-    return OrgListItem(org=org, company=company, metrics=metrics)
+    metrics = storage.METRICS.get(org.org_id)
+    return OrgListItem(org=org, company=comp, metrics=metrics)
 
 
 @app.put("/api/admin/orgs/{org_id}", response_model=Organization)
@@ -525,8 +465,6 @@ def admin_update_company(company_id: str, payload: AdminUpdateCompanyRequest, ct
     return data
 
 
-# ───────────────────────── Admin: Metrics ─────────────────────────
-
 class MetricsOverviewItem(BaseModel):
     org_id: str
     org_name: str
@@ -553,7 +491,7 @@ def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin)):
     return out
 
 
-# ───────────────────────── Tickets (User side) ─────────────────────────
+# ───────────────────────── Tickets (user) ─────────────────────────
 
 class CreateTicketRequest(BaseModel):
     subject: str
@@ -625,7 +563,7 @@ def user_reply_ticket(ticket_id: str, payload: TicketReplyRequest, ctx: SessionC
     return t
 
 
-# ───────────────────────── Tickets (Admin side) ─────────────────────────
+# ───────────────────────── Tickets (admin) ─────────────────────────
 
 class AdminTicketUpdateRequest(BaseModel):
     status: Optional[Literal["open", "in_progress", "done"]] = None
@@ -646,18 +584,16 @@ def admin_reply_ticket(ticket_id: str, payload: AdminTicketUpdateRequest, ctx: S
 
     if payload.text:
         t = storage.add_ticket_message(ticket_id, "admin", payload.text)
-
     if payload.status is not None:
         t.status = payload.status
     if payload.priority is not None:
         t.priority = payload.priority
 
     storage.TICKETS[ticket_id] = t
-    storage.save_state()
     return t
 
 
-# ───────────────────────── Helpdesk (AI Assistant) ─────────────────────────
+# ───────────────────────── Helpdesk (AI) ─────────────────────────
 
 class HelpdeskChatRequest(BaseModel):
     conversation_id: Optional[str] = None
@@ -694,7 +630,6 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
     if not company.ai_api_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="AI key not configured for this company")
 
-    # load or create conversation
     if payload.conversation_id:
         if payload.conversation_id not in storage.HELPDESK_CONVERSATIONS:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
@@ -704,7 +639,6 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
     else:
         conv = storage.create_conversation(ctx.org_id, ctx.company_id, ctx.user_id)
 
-    # add user message
     now = int(time.time())
     user_msg = HelpdeskMessage(
         message_id=f"msg_{uuid.uuid4().hex[:10]}",
@@ -714,7 +648,6 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
     )
     conv.messages.append(user_msg)
 
-    # call AI backend
     try:
         answer = await run_helpdesk_completion(company.ai_api_key, conv, payload.text)
     except Exception as e:
@@ -734,11 +667,10 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
     storage.save_conversation(conv)
 
     storage.record_request(ctx.org_id, "helpdesk.chat", feature="ai.helpdesk")
-
     return conv
 
 
-# ───────────────────────── Projects & Backup (simple) ─────────────────────────
+# ───────────────────────── Projects & backup ─────────────────────────
 
 class ProjectOut(BaseModel):
     id: str

@@ -1,40 +1,52 @@
 // frontend/src/lib/auth.ts
+const STORAGE_KEY = "ribooster_session";
+
+export interface StoredSession {
+  token: string;
+  is_admin: boolean;
+  username: string;
+  display_name: string;
+}
+
 export function setAuthSession(res: {
   token: string;
   is_admin: boolean;
   username: string;
-  display_name?: string | null;
-  org_id?: string | null;
-  org_name?: string | null;
-  company_code?: string | null;
+  display_name: string;
 }) {
-  localStorage.setItem("token", res.token);
-  localStorage.setItem("is_admin", String(res.is_admin));
-  localStorage.setItem("username", res.username);
-  if (res.display_name) localStorage.setItem("display_name", res.display_name);
-  if (res.org_id) localStorage.setItem("org_id", res.org_id);
-  if (res.org_name) localStorage.setItem("org_name", res.org_name);
-  if (res.company_code) localStorage.setItem("company_code", res.company_code);
+  const data: StoredSession = {
+    token: res.token,
+    is_admin: res.is_admin,
+    username: res.username,
+    display_name: res.display_name,
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-export function clearAuthSession() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("is_admin");
-  localStorage.removeItem("username");
-  localStorage.removeItem("display_name");
-  localStorage.removeItem("org_id");
-  localStorage.removeItem("org_name");
-  localStorage.removeItem("company_code");
+export function getStoredSession(): StoredSession | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredSession;
+  } catch {
+    return null;
+  }
 }
 
-export function getToken(): string | null {
-  return localStorage.getItem("token");
+export function getAuthToken(): string | null {
+  const s = getStoredSession();
+  return s?.token ?? null;
 }
 
 export function isLoggedIn(): boolean {
-  return !!getToken();
+  return !!getAuthToken();
 }
 
 export function isAdmin(): boolean {
-  return localStorage.getItem("is_admin") === "true";
+  const s = getStoredSession();
+  return !!s?.is_admin;
+}
+
+export function clearAuthSession() {
+  localStorage.removeItem(STORAGE_KEY);
 }
