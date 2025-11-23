@@ -88,7 +88,7 @@ def _default_state() -> dict:
         code="JBI-999",
         base_url="https://jbi-ribdach.rib40.cloud/itwo40/services",
         rib_company_code="999",
-        allowed_users=["API"],  # you can edit this list
+        allowed_users=["Bardia.pazoki@julius-berger.com"],  
     )
     tng_company = Company(
         company_id="cmp_tng_1000",
@@ -96,7 +96,7 @@ def _default_state() -> dict:
         code="TNG-100",
         base_url="https://tng-linkdigital.rib40.cloud/itwo40/services",
         rib_company_code="1000",
-        allowed_users=["API"],  # edit per your needs
+        allowed_users=["API"], 
     )
 
     state = {

@@ -1,7 +1,7 @@
 // frontend/src/pages/LoginPage.tsx
 
 import React, { useState } from "react";
-import { login } from "../api"; // adjust import if your api helper lives elsewhere
+import { api } from "../lib/api";
 import "./LoginPage.css"; // optional
 
 type Props = {};
