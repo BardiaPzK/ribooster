@@ -4,16 +4,16 @@
 FROM node:20-alpine AS frontend-build
 WORKDIR /app
 
-# Copy only package.json first
+# Copy package.json (mandatory)
 COPY frontend/package.json ./
 
-# If package-lock.json exists, copy it. If not, ignore error.
-# This avoids Docker failing when package-lock.json is missing.
-COPY frontend/package-lock.json ./ || true
+# Copy package-lock.json ONLY IF IT EXISTS using a wildcard
+# This does NOT fail if the file is missing
+COPY frontend/*.json ./
 
 RUN npm install
 
-# Copy full frontend source
+# Copy full frontend
 COPY frontend/ .
 
 RUN npm run build
@@ -31,10 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy backend source
+# Copy backend
 COPY backend/ ./backend
 
-# Copy frontend build output into backend/frontend-dist
+# Copy frontend build output
 COPY --from=frontend-build /app/dist ./frontend-dist
 
 # Install Python deps
