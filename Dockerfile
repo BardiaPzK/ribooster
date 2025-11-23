@@ -4,18 +4,13 @@
 FROM node:20-alpine AS frontend-build
 WORKDIR /app
 
-# Copy package.json + tsconfig + optional lock file
-COPY frontend/package.json ./
-COPY frontend/tsconfig.json ./
-COPY frontend/*.json ./
-
+# Install frontend deps
+COPY frontend/package*.json ./
 RUN npm install
 
 # Copy frontend source
 COPY frontend/ .
-
 RUN npm run build
-
 
 # ------------------------------
 # 2) Backend image
@@ -23,19 +18,18 @@ RUN npm run build
 FROM python:3.11-slim AS backend
 WORKDIR /app
 
-# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy backend source
+# Backend source
 COPY backend/ ./backend
 
-# Copy built frontend into backend
+# Built frontend
 COPY --from=frontend-build /app/dist ./frontend-dist
 
-# Install backend dependencies
+# Python deps
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 EXPOSE 8000
