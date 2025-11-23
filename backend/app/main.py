@@ -49,7 +49,6 @@ from . import storage
 from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
 from .ai_helpdesk import run_helpdesk_completion
 
-
 # ───────────────────────── App setup ─────────────────────────
 
 app = FastAPI(title="ribooster API", version="0.2.0")
@@ -144,14 +143,22 @@ def _display_from_jwt(tok: str, fallback: str) -> str:
     return fallback
 
 
-class SessionCtx(BaseModel):
+class Session(BaseModel):
     token: str
     user_id: str
-    org_id: Optional[str]
-    company_id: Optional[str]
-    username: str
-    display_name: str
+    # org_id can be None for admin sessions
+    org_id: Optional[str] = None
+    company_id: Optional[str] = None
     is_admin: bool
+    created_at: float
+    expires_at: float
+
+    # RIB-related fields (only used for normal org users)
+    rib_host: Optional[str] = None
+    rib_company_code: Optional[str] = None
+    rib_access_token: Optional[str] = None
+    rib_exp_ts: Optional[int] = None
+    rib_role: Optional[str] = None
 
 
 def _session_from_token(token: str) -> SessionCtx:

@@ -76,7 +76,7 @@ DEFAULT_COMPANIES = [
         "base_url": "https://tng-linkdigital.rib40.cloud/itwo40/services",
         "rib_company_code": "1000",
         "allowed_users": [
-            "API",  # add your allowed RIB usernames here
+            "API",
         ],
     }
 ]
