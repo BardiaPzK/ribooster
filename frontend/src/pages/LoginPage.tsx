@@ -1,70 +1,71 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { setAuthSession, isLoggedIn, isAdmin } from "../lib/auth";
 
-const LoginPage: React.FC = () => {
-  const [accessCode, setAccessCode] = useState("");
+// ⭐⭐⭐ IMPORTANT: Named export so router can import { LoginPage }
+export const LoginPage: React.FC = () => {
+  const [companyCode, setCompanyCode] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [err, setErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    if (isLoggedIn()) {
+      navigate(isAdmin() ? "/admin" : "/dashboard", { replace: true });
+    }
+  }, [navigate]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErr(null);
+    setError(null);
+    setLoading(true);
 
     try {
-      const res = await api.POST("/auth/login", {
-        access_code: accessCode.trim(),
-        username: username.trim(),
-        password
-      });
+      const res = await api.login(companyCode.trim(), username.trim(), password);
+      setAuthSession(res);
 
-      // Save session
-      localStorage.setItem("token", res.token);
-      localStorage.setItem("username", res.username);
-      localStorage.setItem("display_name", res.display_name ?? res.username);
-      localStorage.setItem("is_admin", String(res.is_admin));
+      navigate(res.is_admin ? "/admin" : "/dashboard", { replace: true });
 
-      if (res.org_id) localStorage.setItem("org_id", res.org_id);
-      if (res.company_id) localStorage.setItem("company_id", res.company_id);
-      if (res.rib_exp_ts) localStorage.setItem("rib_exp_ts", String(res.rib_exp_ts));
-      if (res.rib_role) localStorage.setItem("rib_role", res.rib_role);
-
-      // Redirect by forcing full page navigation (best for Docker + Vite)
-      if (res.is_admin) {
-        window.location.href = "/admin/overview";
-      } else {
-        window.location.href = "/dashboard";
-      }
-
-    } catch (e: any) {
-      setErr(e?.message || "Login failed");
+    } catch (err: any) {
+      setError(err?.message || "Login failed");
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-6">
-        <h1 className="text-2xl font-semibold text-center mb-6">
-          Sign in to ribooster
-        </h1>
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 flex items-center justify-center px-4">
+      <div className="max-w-md w-full space-y-6">
 
-        <form onSubmit={submit} className="space-y-4">
+        <div className="text-center">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 to-violet-500 mb-3" />
+          <h1 className="text-2xl font-semibold">Sign in to ribooster</h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Use your company code and RIB credentials.  
+            For admin: <span className="font-mono">Admin / admin / admin</span>.
+          </p>
+        </div>
+
+        <form onSubmit={submit} className="card p-6 space-y-4">
+
           <div>
-            <label className="block text-sm font-medium mb-1">Organization Code</label>
+            <label className="block text-sm mb-1">Company Code</label>
             <input
-              className="w-full border rounded-lg px-3 py-2"
-              placeholder="Admin or JBI-999"
-              value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value)}
+              className="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="e.g. TNG-100 or Admin"
+              value={companyCode}
+              onChange={(e) => setCompanyCode(e.target.value)}
               required
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Username</label>
+            <label className="block text-sm mb-1">Username</label>
             <input
-              className="w-full border rounded-lg px-3 py-2"
-              placeholder="username"
+              className="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
@@ -72,29 +73,27 @@ const LoginPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Password</label>
+            <label className="block text-sm mb-1">Password</label>
             <input
               type="password"
-              className="w-full border rounded-lg px-3 py-2"
-              placeholder="password"
+              className="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
             />
           </div>
 
-          {err && <div className="text-red-600 text-sm">{err}</div>}
+          {error && <div className="text-sm text-red-400">{error}</div>}
 
           <button
             type="submit"
-            className="w-full rounded-lg bg-indigo-600 text-white py-2 hover:bg-indigo-700"
+            disabled={loading}
+            className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white py-2 text-sm font-medium transition disabled:opacity-60"
           >
-            Sign In
+            {loading ? "Signing in…" : "Continue"}
           </button>
         </form>
       </div>
     </div>
   );
 };
-
-export default LoginPage;
