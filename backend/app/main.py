@@ -1,6 +1,6 @@
-"""
-backend/app/main.py
+# backend/app/main.py
 
+"""
 FastAPI entrypoint for ribooster.
 
 Focus:
@@ -37,7 +37,7 @@ from .models import (
     License,
     Organization,
     Company,
-    Session,
+    Session,          # session model from models.py
     RIBSession,
     MetricCounters,
     Ticket,
@@ -48,6 +48,7 @@ from .models import (
 from . import storage
 from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
 from .ai_helpdesk import run_helpdesk_completion
+
 
 # ───────────────────────── App setup ─────────────────────────
 
@@ -61,6 +62,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ───────────────────────── Static Frontend ─────────────────────────
 
@@ -84,7 +86,6 @@ if os.path.isdir(FRONTEND_DIR):
         if os.path.isfile(index_file):
             return FileResponse(index_file)
         return {"detail": "index.html not found"}
-
 
 
 # ───────────────────────── Auth helpers ─────────────────────────
@@ -115,6 +116,19 @@ class LoginResponse(BaseModel):
     rib_role: Optional[str] = None
 
 
+class SessionCtx(BaseModel):
+    """
+    Lightweight session context returned to frontend and used in dependencies.
+    """
+    token: str
+    user_id: str
+    org_id: Optional[str] = None
+    company_id: Optional[str] = None
+    username: str
+    display_name: str
+    is_admin: bool
+
+
 def _jwt_payload(tok: str) -> Dict[str, Any]:
     import base64
     import json
@@ -141,24 +155,6 @@ def _display_from_jwt(tok: str, fallback: str) -> str:
                 return v.split(" ")[0].strip()
             return v.strip()
     return fallback
-
-
-class Session(BaseModel):
-    token: str
-    user_id: str
-    # org_id can be None for admin sessions
-    org_id: Optional[str] = None
-    company_id: Optional[str] = None
-    is_admin: bool
-    created_at: float
-    expires_at: float
-
-    # RIB-related fields (only used for normal org users)
-    rib_host: Optional[str] = None
-    rib_company_code: Optional[str] = None
-    rib_access_token: Optional[str] = None
-    rib_exp_ts: Optional[int] = None
-    rib_role: Optional[str] = None
 
 
 def _session_from_token(token: str) -> SessionCtx:
@@ -206,14 +202,12 @@ def require_org_user(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
 
 # ───────────────────────── Health ─────────────────────────
 
-
 @app.get("/health")
 def health():
     return {"status": "ok", "time": int(time.time())}
 
 
 # ───────────────────────── Login ─────────────────────────
-
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest):
@@ -234,7 +228,7 @@ def login(payload: LoginRequest):
         sess = Session(
             token=uuid.uuid4().hex + uuid.uuid4().hex,
             user_id=f"admin-{username}",
-            org_id=None,
+            org_id="admin",
             company_id=None,
             username=username,
             display_name="ribooster admin",
@@ -271,9 +265,15 @@ def login(payload: LoginRequest):
     try:
         rib_sess = auth.login(username, password)
     except requests.HTTPError as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"RIB login failed: {e.response.text}") from e
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"RIB login failed: {e.response.text}",
+        ) from e
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"RIB login failed: {e}") from e
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"RIB login failed: {e}",
+        ) from e
 
     # derive display name from JWT if possible
     display_name = _display_from_jwt(rib_sess.access_token, username)
@@ -311,7 +311,6 @@ def login(payload: LoginRequest):
 
 # ───────────────────────── Auth / Me ─────────────────────────
 
-
 @app.get("/api/auth/me")
 def me(ctx: SessionCtx = Depends(require_session)):
     return ctx
@@ -319,11 +318,10 @@ def me(ctx: SessionCtx = Depends(require_session)):
 
 # ───────────────────────── Admin: Orgs & Companies ─────────────────────────
 
-
 class OrgListItem(BaseModel):
     org: Organization
     company: Company
-    metrics: Optional[MetricCounters] = None  # allow None to avoid validation error
+    metrics: Optional[MetricCounters] = None  # allow None
 
 
 class AdminCreateOrgRequest(BaseModel):
@@ -362,7 +360,6 @@ class AdminUpdateCompanyRequest(BaseModel):
 def admin_list_orgs(ctx: SessionCtx = Depends(require_admin)):
     out: List[OrgListItem] = []
     for org in storage.ORGS.values():
-        # choose first company for list view
         comp = next((c for c in storage.COMPANIES.values() if c.org_id == org.org_id), None)
         metrics = storage.METRICS.get(org.org_id)
         if comp:
@@ -394,7 +391,7 @@ def admin_update_org(org_id: str, payload: AdminUpdateOrgRequest, ctx: SessionCt
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
 
-    data = org.model_copy(update={})
+    data = org.model_copy()
     if payload.name is not None:
         data.name = payload.name
     if payload.contact_email is not None:
@@ -410,7 +407,6 @@ def admin_update_org(org_id: str, payload: AdminUpdateOrgRequest, ctx: SessionCt
     if payload.active is not None:
         data.license.active = payload.active
     if payload.features is not None:
-        # merge feature toggles
         new_feats = dict(data.features)
         new_feats.update(payload.features)
         data.features = new_feats
@@ -425,7 +421,7 @@ def admin_update_company(company_id: str, payload: AdminUpdateCompanyRequest, ct
     if not comp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
-    data = comp.model_copy(update={})
+    data = comp.model_copy()
     if payload.base_url is not None:
         data.base_url = payload.base_url
     if payload.rib_company_code is not None:
@@ -442,7 +438,6 @@ def admin_update_company(company_id: str, payload: AdminUpdateCompanyRequest, ct
 
 
 # ───────────────────────── Admin: Metrics ─────────────────────────
-
 
 class MetricsOverviewItem(BaseModel):
     org_id: str
@@ -471,7 +466,6 @@ def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin)):
 
 
 # ───────────────────────── Tickets (User side) ─────────────────────────
-
 
 class CreateTicketRequest(BaseModel):
     subject: str
@@ -545,7 +539,6 @@ def user_reply_ticket(ticket_id: str, payload: TicketReplyRequest, ctx: SessionC
 
 # ───────────────────────── Tickets (Admin side) ─────────────────────────
 
-
 class AdminTicketUpdateRequest(BaseModel):
     status: Optional[Literal["open", "in_progress", "done"]] = None
     priority: Optional[Literal["low", "normal", "high", "urgent"]] = None
@@ -554,7 +547,6 @@ class AdminTicketUpdateRequest(BaseModel):
 
 @app.get("/api/admin/tickets", response_model=List[Ticket])
 def admin_list_tickets(ctx: SessionCtx = Depends(require_admin)):
-    # simple: return all tickets (you can filter by org later)
     return sorted(storage.TICKETS.values(), key=lambda t: t.updated_at, reverse=True)
 
 
@@ -578,7 +570,6 @@ def admin_reply_ticket(ticket_id: str, payload: AdminTicketUpdateRequest, ctx: S
 
 
 # ───────────────────────── Helpdesk (AI Assistant) ─────────────────────────
-
 
 class HelpdeskChatRequest(BaseModel):
     conversation_id: Optional[str] = None
@@ -639,7 +630,6 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
     try:
         answer = await run_helpdesk_completion(company.ai_api_key, conv, payload.text)
     except Exception as e:
-        # rollback last message on error
         conv.messages.pop()
         conv.updated_at = int(time.time())
         storage.save_conversation(conv)
@@ -661,7 +651,6 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
 
 
 # ───────────────────────── Projects & Backup (simple) ─────────────────────────
-
 
 class ProjectOut(BaseModel):
     id: str
@@ -704,10 +693,6 @@ class BackupRequest(BaseModel):
 
 @app.post("/api/user/projects/backup", response_model=ProjectBackupJob)
 def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_user)):
-    """
-    For now this creates a job record and logs a simple message.
-    You can later extend it to fetch data and write a ZIP file.
-    """
     _ensure_feature(ctx, "projects.backup")
 
     job = storage.create_backup_job(
@@ -724,7 +709,6 @@ def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_u
         },
     )
 
-    # simple synchronous placeholder: just mark as completed for now
     job.status = "completed"
     job.log.append("Backup job placeholder completed (no real ZIP yet).")
     job.updated_at = int(time.time())
