@@ -63,24 +63,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ───────────────────────── Static Frontend ─────────────────────────
+
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "frontend-dist")
+
 if os.path.isdir(FRONTEND_DIR):
-    # Serve all static assets from /app/assets/***
+
+    # Serve asset files
     app.mount(
         "/app/assets",
         StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")),
         name="assets",
     )
-    
-    # Serve index.html for /app and any /app/* route
-    @app.get("/app")
-    @app.get("/app/")
-    @app.get("/app/{full_path:path}")
-    async def frontend_catch_all(full_path: str = ""):
+
+    # Serve index.html for all /app routes
+    @app.get("/app", include_in_schema=False)
+    @app.get("/app/", include_in_schema=False)
+    @app.get("/app/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str = ""):
         index_file = os.path.join(FRONTEND_DIR, "index.html")
         if os.path.isfile(index_file):
             return FileResponse(index_file)
         return {"detail": "index.html not found"}
+
 
 
 # ───────────────────────── Auth helpers ─────────────────────────
