@@ -14,22 +14,28 @@ from __future__ import annotations
 import base64
 import json
 import time
+from dataclasses import dataclass
 from typing import Dict, List
 
 import requests
-from pydantic import BaseModel
 
 from .models import RIBSession
-from dataclasses import dataclass
+
+
+# ───────────────────────── Config ─────────────────────────
+
 
 @dataclass
 class AuthCfg:
-    host: str
-    company: str
+    host: str   # e.g. "https://tng-linkdigital.rib40.cloud/itwo40/services"
+    company: str  # e.g. "TNG-100" (RIB company code)
+
+
+# ───────────────────────── Auth client ─────────────────────────
 
 
 class Auth:
-    """JWT login + header generator."""
+    """JWT login + header generator for RIB iTWO 4.0."""
 
     _LEEWAY_SEC = 300
 
@@ -37,59 +43,71 @@ class Auth:
         self.cfg = cfg
         self.sess = requests.Session()
         self.sess.headers.update({"X-Client-Tag": client_tag})
+
         self.token: str = ""
         self.role: str = ""
         self.exp_ts: int | None = None
-        self._user: str | None = None
-        self._pwd: str | None = None
 
     # ───────── login + headers ─────────
 
     def login(self, username: str, password: str) -> RIBSession:
         """
-        Login against RIB 4.0 Identity endpoint.
-
-        Expects:
-        - auth/connect/token to return access_token, expires_in and (optionally) secureClientRole.
-        - If secureClientRole is missing, falls back to checkcompanycode.
+        Password-based login against /auth/connect/token.
+        If this returns 401, usually one of:
+          - wrong username / password
+          - wrong client_id / scope
+          - environment restricted (Scheduled Environment, etc.)
         """
-        self._user = username
-        self._pwd = password
 
         url = f"{self.cfg.host}/auth/connect/token"
+
+        # IMPORTANT:
+        # You MUST align client_id + scope with what Swagger uses for your server.
+        # Check in browser devtools -> Network -> token request.
         data = {
             "username": username,
             "password": password,
-            "client_id": "itwo",
+            "client_id": "itwo",          # CHANGE HERE if Swagger uses a different one
             "grant_type": "password",
-            "scope": "openid profile",
+            "scope": "openid profile",    # CHANGE HERE to match Swagger if needed
         }
 
-        resp = self.sess.post(url, data=data, timeout=60)
-        resp.raise_for_status()
+        try:
+            resp = self.sess.post(
+                url,
+                data=data,               # form-encoded
+                timeout=30,
+            )
+        except Exception as e:
+            raise RuntimeError(f"RIB auth network error: {e}") from e
+
+        # Better error messages: show full body for 4xx/5xx
+        if resp.status_code != 200:
+            body_text = resp.text.strip()
+            # This will bubble up to FastAPI and you see it in your 401 message
+            raise requests.HTTPError(
+                f"RIB auth failed {resp.status_code} at {url} - body: {body_text[:500]}",
+                response=resp,
+            )
+
         body = resp.json()
 
-        access_token = body["access_token"]
-        # prefer server expires_in, fallback to JWT exp
-        expires_in = int(body.get("expires_in", 0) or 0)
-        if expires_in > 0:
-            exp_ts = int(time.time()) + expires_in
-        else:
-            exp_ts = self._exp_epoch(access_token)
+        access_token = body.get("access_token")
+        if not access_token:
+            raise RuntimeError(f"RIB auth: access_token missing in response: {body}")
 
-        secure_client_role = body.get("secureClientRole") or ""
+        # exp from payload or 'expires_in'
+        exp_ts = self._exp_epoch(access_token)
+        if "expires_in" in body:
+            exp_ts = int(time.time()) + int(body["expires_in"])
 
-        # If secureClientRole not present in token response, try company check
-        if not secure_client_role:
-            try:
-                secure_client_role = self._role()
-            except Exception:
-                secure_client_role = ""
+        # Some servers send secureClientRole directly, some not.
+        secure_client_role = body.get("secureClientRole")
 
-        # store on Auth instance for later headers
+        # Fill Auth fields so hdr() works for follow-up calls
         self.token = access_token
-        self.role = secure_client_role
         self.exp_ts = exp_ts
+        self.role = secure_client_role or ""
 
         return RIBSession(
             access_token=access_token,
@@ -119,13 +137,18 @@ class Auth:
 
     def _role(self) -> str:
         """
-        Fetch secureClientRolePart for current token + company.
+        Optional extra call to get secureClientRolePart if needed.
+        Not used right now, but kept for future.
         """
         url = (
             f"{self.cfg.host}/basics/publicapi/company/1.0/"
             f"checkcompanycode?requestedSignedInCompanyCode={self.cfg.company}"
         )
-        rsp = self.sess.get(url, headers={"Authorization": f"Bearer {self.token}"}, timeout=30)
+        rsp = self.sess.get(
+            url,
+            headers={"Authorization": f"Bearer {self.token}"},
+            timeout=30,
+        )
         rsp.raise_for_status()
         part = rsp.json().get("secureClientRolePart")
         if not part:
@@ -134,15 +157,8 @@ class Auth:
 
     @staticmethod
     def _exp_epoch(jwt: str) -> int:
-        """
-        Extract exp from JWT payload, fall back to +1h if anything fails.
-        """
         try:
-            payload_b64 = jwt.split(".")[1]
-            padding = (-len(payload_b64)) % 4
-            if padding:
-                payload_b64 += "=" * padding
-            pay = base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode()
+            pay = base64.urlsafe_b64decode(jwt.split(".")[1] + "===").decode()
             return int(json.loads(pay)["exp"])
         except Exception:
             return int(time.time()) + 3600  # 1h fallback
