@@ -66,9 +66,9 @@ def init_defaults() -> None:
         code="TNG-100",
         base_url=os.environ.get(
             "TNG100_RIB_HOST",
-            "https://jbi-ribdach.rib40.cloud/itwo40/services",
+            "https://tng-linkdigital.rib40.cloud/itwo40/services",
         ),
-        rib_company_code=os.environ.get("TNG100_RIB_COMPANY", "999"),
+        rib_company_code=os.environ.get("TNG100_RIB_COMPANY", "1000"),
         allowed_users=[],  # empty list = all users allowed
         ai_api_key=None,
     )
