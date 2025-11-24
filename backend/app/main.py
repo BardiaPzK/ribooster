@@ -14,12 +14,7 @@ Features:
 Static frontend (Vite build) is served from /app.
 """
 
-# backend/app/main.py
-"""
-FastAPI entrypoint for ribooster.
-"""
-
-from __future__ import annotations
+# ← no more "from __future__" here
 
 import base64
 import json
@@ -35,7 +30,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
-
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy import select
 
@@ -66,6 +60,8 @@ from .db import (
     DBUserLog,
     seed_default_org_company,
 )
+
+
 
 # ---------------------------------------------------------
 # FIX: Create the FastAPI app BEFORE any routes
