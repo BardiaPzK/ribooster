@@ -16,8 +16,8 @@ export type AuthSession = {
 
 const STORAGE_KEY = "ribooster.session";
 
-/**
- * Save session to localStorage.
+/*
+ * Save session
  */
 export function setSession(sess: AuthSession | null): void {
   if (!sess) {
@@ -29,8 +29,8 @@ export function setSession(sess: AuthSession | null): void {
   emitAuthChange(sess);
 }
 
-/**
- * Read session from localStorage.
+/*
+ * Load session
  */
 export function getSession(): AuthSession | null {
   try {
@@ -42,31 +42,28 @@ export function getSession(): AuthSession | null {
   }
 }
 
-/**
- * Simple helpers for non-React code.
+/*
+ * Helper functions
  */
-export function isLoggedIn(): boolean {
+export function isLoggedIn() {
   return !!getSession();
 }
 
-export function isAdmin(): boolean {
-  const s = getSession();
-  return !!s?.is_admin;
+export function isAdmin() {
+  return !!getSession()?.is_admin;
 }
 
-export function getToken(): string | null {
+/*
+ * 🔥 IMPORTANT — required by api.ts
+ */
+export function getAuthToken(): string | null {
   return getSession()?.token ?? null;
 }
 
-/**
- * Low-level login call against /api/auth/login.
- * Stores the session automatically and returns it.
+/*
+ * Login
  */
-export async function login(
-  companyCode: string,
-  username: string,
-  password: string
-): Promise<AuthSession> {
+export async function login(companyCode: string, username: string, password: string) {
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -102,53 +99,45 @@ export async function login(
   return sess;
 }
 
-/**
- * Logout helper.
+/*
+ * Logout
  */
-export function logout(): void {
+export function logout() {
   setSession(null);
 }
 
-// ───────────────────────── React hook ─────────────────────────
-
-type AuthListener = (sess: AuthSession | null) => void;
-
+/*
+ * Auth listeners
+ */
+type AuthListener = (s: AuthSession | null) => void;
 const listeners = new Set<AuthListener>();
 
 function emitAuthChange(sess: AuthSession | null) {
   for (const l of listeners) {
-    try {
-      l(sess);
-    } catch {
-      // ignore
-    }
+    try { l(sess); } catch {}
   }
 }
 
-function subscribe(listener: AuthListener): () => void {
+function subscribe(listener: AuthListener) {
   listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
+  return () => listeners.delete(listener);
 }
 
-/**
- * useAuth hook: React-friendly auth state.
+/*
+ * React hook
  */
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 
 export function useAuth() {
-  const [session, setSessionState] = useState<AuthSession | null>(() => {
+  const [session, setState] = useState<AuthSession | null>(() => {
     if (typeof window === "undefined") return null;
     return getSession();
   });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    const unsub = subscribe((sess) => setSessionState(sess));
-    // Sync once on mount
-    setSessionState(getSession());
+    const unsub = subscribe((sess) => setState(sess));
+    setState(getSession());
     return unsub;
   }, []);
 
@@ -159,5 +148,5 @@ export function useAuth() {
   };
 }
 
-// Default export for `import useAuth from "./lib/auth";`
+// Default export to allow `import useAuth from "..."`
 export default useAuth;
