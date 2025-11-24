@@ -285,16 +285,18 @@ def _org_from_db(o: DBOrganization) -> Organization:
 
 def _company_from_db(db_company: DBCompany) -> Company:
     allowed_users: list[str] = []
-    if db_company.allowed_users_json:
+    raw = db_company.allowed_users_json
+
+    if raw:
         try:
-            data = json.loads(db_company.allowed_users_json)
+            data = json.loads(raw)
             if isinstance(data, list):
                 allowed_users = [str(u).strip().lower() for u in data if str(u).strip()]
         except Exception:
-            allowed_users = _normalize_allowed_users(db_company.allowed_users_json)
+            allowed_users = _normalize_allowed_users(raw)
 
     return Company(
-        company_id=str(db_company.id),
+        company_id=str(db_company.company_id),   # ← FIXED
         org_id=str(db_company.org_id),
         name=db_company.name,
         code=db_company.code,
@@ -303,6 +305,7 @@ def _company_from_db(db_company: DBCompany) -> Company:
         allowed_users=allowed_users,
         ai_api_key=db_company.ai_api_key,
     )
+
 
 
 
@@ -334,16 +337,17 @@ def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
     )
 
 
-def _get_org_company_by_code(db: SASession, code: str) -> tuple[DBOrganization, DBCompany]:
+def _get_org_company_by_code(db: SASession, code: str):
     stmt = (
         select(DBOrganization, DBCompany)
         .join(DBCompany, DBCompany.org_id == DBOrganization.org_id)
-        .where(DBCompany.code.ilike(code))
+        .where(DBCompany.code == code)  # << FIX HERE
     )
     row = db.execute(stmt).first()
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown company code")
+        raise HTTPException(404, "Unknown company code")
     return row[0], row[1]
+
 
 
 def _ensure_feature(ctx: SessionCtx, feature_key: str, db: SASession) -> None:
@@ -422,11 +426,10 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
 
     # optional allowed users check
     if company.allowed_users:
-        if username.lower() not in [u.lower() for u in company.allowed_users]:
-            raise HTTPException(
-                status_code=403,
-                detail="User is not allowed for this company code",
-            )
+        allowed = [u.lower() for u in company.allowed_users]
+        if username.lower() not in allowed:
+            raise HTTPException(status=403, detail="User is not allowed for this company code")
+
 
 
     # RIB login

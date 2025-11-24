@@ -1,134 +1,182 @@
 // frontend/src/router.tsx
-import React, { useEffect, useState } from "react";
-import type { RouteObject } from "react-router-dom";
+import React from "react";
+import {
+  createBrowserRouter,
+  Navigate,
+} from "react-router-dom";
 
 import LoginPage from "./pages/LoginPage";
-import UserDashboard from "./pages/UserDashboard";
-import ProjectBackup from "./pages/user/ProjectBackup";
-import UserTickets from "./pages/user/UserTickets";
+import AdminDashboard from "./pages/admin/AdminDashboard";
+import AdminOrgs from "./pages/admin/OrgListPage";
+import AdminTickets from "./pages/admin/AdminTicketsPage";
+
+import UserDashboard from "./pages/user/UserDashboard";
+import UserTickets from "./pages/user/TicketsPage";
+import UserTicketView from "./pages/user/TicketViewPage";
+import UserProjects from "./pages/user/ProjectsPage";
+import UserHelpdesk from "./pages/user/HelpdeskPage";
 import TextToSql from "./pages/user/TextToSql";
 
-import AdminLayout from "./pages/admin/AdminLayout";
-import AdminOverview from "./pages/admin/AdminOverview";
-import AdminOrgs from "./pages/admin/AdminOrgs";
-import AdminTickets from "./pages/admin/AdminTickets";
-import AdminSettings from "./pages/admin/AdminSettings";
+import useAuth, { isAdmin, isLoggedIn } from "./lib/auth";
 
-import { api, MeResponse } from "./lib/api";
 
-// Wrapper that loads /api/admin/me and then renders AdminLayout with props
-const AdminLayoutRoute: React.FC = () => {
-  const [me, setMe] = useState<MeResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+// ─────────────────────────────────────────────
+// Helper routes
+// ─────────────────────────────────────────────
 
-  useEffect(() => {
-    let cancelled = false;
+// Wrapper: requires ANY logged-in session
+function RequireAuth({ children }: { children: JSX.Element }) {
+  const { user } = useAuth();
 
-    async function load() {
-      try {
-        const m = await api.me();
-        if (!cancelled) {
-          setMe(m);
-        }
-      } catch (e: any) {
-        if (!cancelled) {
-          setError(e?.message || "Failed to load admin user");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500">
-        Loading admin…
-      </div>
-    );
+  if (!user) {
+    return <Navigate to="/login" replace />;
   }
+  return children;
+}
 
-  if (error || !me) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-red-500">
-        {error || "Admin session missing"}
-      </div>
-    );
+// Wrapper: requires admin session
+function RequireAdmin({ children }: { children: JSX.Element }) {
+  const { user } = useAuth();
+
+  if (!user || !user.is_admin) {
+    return <Navigate to="/login" replace />;
   }
+  return children;
+}
 
-  return <AdminLayout me={me} />;
-};
+// Wrapper: requires user (not admin)
+function RequireUser({ children }: { children: JSX.Element }) {
+  const { user } = useAuth();
 
-export const routes: RouteObject[] = [
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.is_admin) return <Navigate to="/admin" replace />;
+
+  return children;
+}
+
+
+// ─────────────────────────────────────────────
+// Main Router
+// ─────────────────────────────────────────────
+const router = createBrowserRouter([
+  //
+  // LOGIN
+  //
   {
     path: "/login",
     element: <LoginPage />,
   },
 
-  // USER AREA
-  {
-    path: "/user",
-    children: [
-      {
-        index: true,
-        element: <UserDashboard />,
-      },
-      {
-        path: "projects",
-        element: <ProjectBackup />,
-      },
-      {
-        path: "tickets",
-        element: <UserTickets />,
-      },
-      {
-        path: "text-sql",
-        element: <TextToSql />,
-      },
-    ],
-  },
-
-  // ADMIN AREA
-  {
-    path: "/admin",
-    element: <AdminLayoutRoute />,
-    children: [
-      {
-        index: true,
-        element: <AdminOverview />,
-      },
-      {
-        path: "orgs",
-        element: <AdminOrgs />,
-      },
-      {
-        path: "tickets",
-        element: <AdminTickets />,
-      },
-      {
-        path: "settings",
-        element: <AdminSettings />,
-      },
-    ],
-  },
-
-  // Optional alias so /app/text-to-sql still works if you link to it
-  {
-    path: "/text-to-sql",
-    element: <TextToSql />,
-  },
-
-  // Root → user dashboard by default
+  //
+  // ROOT → check session → go to admin or user
+  //
   {
     path: "/",
-    element: <UserDashboard />,
+    element: (
+      <AuthRedirect />
+    ),
   },
-];
+
+  //
+  // ADMIN ROUTES
+  //
+  {
+    path: "/admin",
+    element: (
+      <RequireAdmin>
+        <AdminDashboard />
+      </RequireAdmin>
+    ),
+  },
+  {
+    path: "/admin/organizations",
+    element: (
+      <RequireAdmin>
+        <AdminOrgs />
+      </RequireAdmin>
+    ),
+  },
+  {
+    path: "/admin/tickets",
+    element: (
+      <RequireAdmin>
+        <AdminTickets />
+      </RequireAdmin>
+    ),
+  },
+
+  //
+  // USER ROUTES
+  //
+  {
+    path: "/user",
+    element: (
+      <RequireUser>
+        <UserDashboard />
+      </RequireUser>
+    ),
+  },
+  {
+    path: "/user/tickets",
+    element: (
+      <RequireUser>
+        <UserTickets />
+      </RequireUser>
+    ),
+  },
+  {
+    path: "/user/tickets/:ticket_id",
+    element: (
+      <RequireUser>
+        <UserTicketView />
+      </RequireUser>
+    ),
+  },
+  {
+    path: "/user/projects",
+    element: (
+      <RequireUser>
+        <UserProjects />
+      </RequireUser>
+    ),
+  },
+  {
+    path: "/user/helpdesk",
+    element: (
+      <RequireUser>
+        <UserHelpdesk />
+      </RequireUser>
+    ),
+  },
+  {
+    path: "/user/textsql",
+    element: (
+      <RequireUser>
+        <TextToSql />
+      </RequireUser>
+    ),
+  },
+
+  //
+  // FALLBACK → send to login
+  //
+  {
+    path: "*",
+    element: <Navigate to="/login" replace />,
+  },
+]);
+
+
+// ─────────────────────────────────────────────
+// Redirect logic at root "/"
+// ─────────────────────────────────────────────
+function AuthRedirect() {
+  const { user } = useAuth();
+
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.is_admin) return <Navigate to="/admin" replace />;
+  return <Navigate to="/user" replace />;
+}
+
+
+export default router;
