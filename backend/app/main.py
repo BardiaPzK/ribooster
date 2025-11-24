@@ -63,6 +63,30 @@ from .db import (
 
 
 
+
+
+
+
+def _normalize_allowed_users(raw: Optional[str]) -> list[str]:
+    """
+    Take a comma-separated string or JSON list from the DB and normalize to
+    lowercase usernames without empty entries.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str) and raw.strip().startswith("["):
+        # Looks like JSON list
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [str(u).strip().lower() for u in data if str(u).strip()]
+        except Exception:
+            pass
+    # fallback: comma separated
+    return [u.strip().lower() for u in raw.split(",") if u.strip()]
+
+
+
 # ---------------------------------------------------------
 # FIX: Create the FastAPI app BEFORE any routes
 # ---------------------------------------------------------
@@ -259,23 +283,27 @@ def _org_from_db(o: DBOrganization) -> Organization:
     )
 
 
-def _company_from_db(c: DBCompany) -> Company:
-    allowed: List[str] = []
-    if c.allowed_users_json:
+def _company_from_db(db_company: DBCompany) -> Company:
+    allowed_users: list[str] = []
+    if db_company.allowed_users_json:
         try:
-            allowed = json.loads(c.allowed_users_json)
+            data = json.loads(db_company.allowed_users_json)
+            if isinstance(data, list):
+                allowed_users = [str(u).strip().lower() for u in data if str(u).strip()]
         except Exception:
-            allowed = []
+            allowed_users = _normalize_allowed_users(db_company.allowed_users_json)
+
     return Company(
-        company_id=c.company_id,
-        org_id=c.org_id,
-        name=c.name,
-        code=c.code,
-        base_url=c.base_url,
-        rib_company_code=c.rib_company_code,
-        allowed_users=allowed,
-        ai_api_key=c.ai_api_key,
+        company_id=str(db_company.id),
+        org_id=str(db_company.org_id),
+        name=db_company.name,
+        code=db_company.code,
+        base_url=db_company.base_url,
+        rib_company_code=db_company.rib_company_code,
+        allowed_users=allowed_users,
+        ai_api_key=db_company.ai_api_key,
     )
+
 
 
 def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
@@ -393,8 +421,13 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License inactive or expired")
 
     # optional allowed users check
-    if company.allowed_users and username not in company.allowed_users:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed for this company")
+    if company.allowed_users:
+        if username.lower() not in [u.lower() for u in company.allowed_users]:
+            raise HTTPException(
+                status_code=403,
+                detail="User is not allowed for this company code",
+            )
+
 
     # RIB login
     auth = Auth(AuthCfg(host=company.base_url, company=company.rib_company_code))

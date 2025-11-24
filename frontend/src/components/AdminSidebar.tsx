@@ -5,15 +5,17 @@ import { NavLink } from "react-router-dom";
 type NavItemProps = {
   to: string;
   label: string;
+  end?: boolean;
 };
 
 const baseClasses =
   "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors";
 
-const NavItem: React.FC<NavItemProps> = ({ to, label }) => {
+const NavItem: React.FC<NavItemProps> = ({ to, label, end }) => {
   return (
     <NavLink
       to={to}
+      end={end}
       className={({ isActive }) =>
         [
           baseClasses,
@@ -41,7 +43,7 @@ const AdminSidebar: React.FC = () => {
         </div>
       </div>
       <nav className="flex-1 px-2 py-3 space-y-1">
-        <NavItem to="/admin" label="Overview" />
+        <NavItem to="/admin" end label="Overview" />
         <NavItem to="/admin/orgs" label="Organizations" />
         <NavItem to="/admin/tickets" label="Tickets" />
         <NavItem to="/admin/settings" label="Settings" />

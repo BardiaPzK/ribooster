@@ -1,136 +1,91 @@
 // frontend/src/pages/LoginPage.tsx
-import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { login, isLoggedIn, isAdmin, getSession, logout } from "../lib/auth";
+import React, { useState } from "react";
+import { login } from "../lib/auth";
 
-const LoginPage: React.FC = () => {
-  const nav = useNavigate();
-
-  const [companyCode, setCompanyCode] = useState("Admin");
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin");
+export default function LoginPage() {
+  const [companyCode, setCompanyCode] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  // If already logged in, redirect
-  useEffect(() => {
-    if (isLoggedIn()) {
-      nav(isAdmin() ? "/admin" : "/user", { replace: true });
-    }
-  }, [nav]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const sess = await login(companyCode.trim(), username.trim(), password);
-      console.log("Logged in:", sess);
-
-      if (sess.is_admin) {
-        nav("/admin", { replace: true });
-      } else {
-        nav("/user", { replace: true });
-      }
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message ?? "Login failed");
+      await login(companyCode, username, password);
+      window.location.href = "/app/";
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Login failed");
     } finally {
       setLoading(false);
     }
   }
 
-  function handleLogout() {
-    logout();
-    setCompanyCode("Admin");
-    setUsername("admin");
-    setPassword("admin");
-    setError(null);
-  }
-
-  const existing = getSession();
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6 space-y-4">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900">ribooster Login</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Sign in with your company code and RIB user.
-          </p>
-        </div>
+    <div className="min-h-screen flex items-center justify-center bg-slate-950">
+      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <h1 className="text-xl font-semibold text-slate-50 mb-2">ribooster login</h1>
+        <p className="text-xs text-slate-400 mb-4">
+          Enter your company code and RIB credentials.
+        </p>
 
-        {existing && (
-          <div className="text-xs bg-emerald-50 border border-emerald-200 rounded p-2 text-emerald-800 flex justify-between items-center">
-            <span>
-              Already logged in as <b>{existing.username}</b>{" "}
-              {existing.is_admin ? "(admin)" : ""}
-            </span>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="ml-2 text-[11px] underline"
-            >
-              Logout
-            </button>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="space-y-1 text-sm">
-            <label className="font-medium text-slate-800">Company Code</label>
+        <form onSubmit={handleSubmit} autoComplete="off" className="space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-300">
+              Company Code
+            </label>
             <input
               type="text"
-              className="w-full rounded border border-slate-300 px-2 py-1"
+              autoComplete="off"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 placeholder:text-slate-500"
+              placeholder="e.g. Admin"
               value={companyCode}
               onChange={(e) => setCompanyCode(e.target.value)}
-              placeholder="Admin or e.g. TNG-100"
             />
           </div>
 
-          <div className="space-y-1 text-sm">
-            <label className="font-medium text-slate-800">Username</label>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-300">Username</label>
             <input
               type="text"
-              className="w-full rounded border border-slate-300 px-2 py-1"
+              autoComplete="off"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 placeholder:text-slate-500"
+              placeholder="e.g. admin"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="Your RIB username"
             />
           </div>
 
-          <div className="space-y-1 text-sm">
-            <label className="font-medium text-slate-800">Password</label>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-300">Password</label>
             <input
               type="password"
-              className="w-full rounded border border-slate-300 px-2 py-1"
+              autoComplete="new-password"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 placeholder:text-slate-500"
+              placeholder="Your password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
           </div>
 
           {error && (
-            <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">
+            <div className="text-xs text-red-400 bg-red-950/40 border border-red-800 rounded-lg px-3 py-2">
               {error}
             </div>
           )}
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full rounded bg-blue-600 text-white text-sm py-2 hover:bg-blue-700 disabled:opacity-60"
+            disabled={loading || !companyCode || !username || !password}
+            className="w-full rounded-lg bg-indigo-600 text-slate-50 text-sm font-medium py-2.5 mt-1 hover:bg-indigo-500 disabled:opacity-50"
           >
             {loading ? "Signing in…" : "Sign in"}
           </button>
         </form>
-
-        <div className="text-[11px] text-slate-400">
-          Admin demo: Company code <b>Admin</b>, user <b>admin</b>, password{" "}
-          <b>admin</b>.
-        </div>
       </div>
     </div>
   );
-};
-
-export default LoginPage;
+}

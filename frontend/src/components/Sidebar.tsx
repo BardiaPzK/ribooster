@@ -10,6 +10,7 @@ type SidebarProps = {
 const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin }) => {
   const location = useLocation();
 
+  // NOTE: these are router paths, BrowserRouter has basename="/app"
   const userLinks = [
     { to: "/user", label: "Overview" },
     { to: "/user/tickets", label: "Support Tickets" },
@@ -17,9 +18,9 @@ const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin }) => {
     { to: "/user/text-sql", label: "Text to SQL" },
   ];
 
+  const current = location.pathname.replace("/app", "") || "/";
 
-  // Admin nav is handled in AdminSidebar, this one is mainly user sidebar.
-  const isActive = (path: string) => location.pathname === path;
+  const isActive = (path: string) => current === path;
 
   return (
     <aside className="w-64 min-h-screen bg-slate-900 text-slate-100 flex flex-col">
