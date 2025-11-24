@@ -1,4 +1,5 @@
 // frontend/src/lib/auth.ts
+
 import { useEffect, useState } from "react";
 
 const STORAGE_KEY = "ribooster_session";
@@ -10,7 +11,6 @@ export interface StoredSession {
   display_name: string;
 }
 
-// Small helper so other tabs / components can react to auth changes
 function emitAuthChange() {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("ribooster-auth-changed"));
@@ -44,8 +44,7 @@ export function getStoredSession(): StoredSession | null {
 }
 
 export function getAuthToken(): string | null {
-  const s = getStoredSession();
-  return s?.token ?? null;
+  return getStoredSession()?.token ?? null;
 }
 
 export function isLoggedIn(): boolean {
@@ -62,25 +61,18 @@ export function clearAuthSession() {
   emitAuthChange();
 }
 
-// ───────────────────────── useAuth hook (for App.tsx) ─────────────────────────
-
 export interface AuthState {
   user: StoredSession | null;
   loading: boolean;
 }
 
 /**
- * Simple auth hook used by AppRoutes.
- * - Reads the session from localStorage
- * - Updates when login/logout happens (via custom event + storage events)
+ * Hook that updates automatically when login/logout happens
  */
 export function useAuth(): AuthState {
-  const [state, setState] = useState<AuthState>(() => {
-    // During SSR / build there is no window
-    if (typeof window === "undefined") {
-      return { user: null, loading: true };
-    }
-    return { user: getStoredSession(), loading: false };
+  const [state, setState] = useState<AuthState>({
+    user: typeof window === "undefined" ? null : getStoredSession(),
+    loading: false,
   });
 
   useEffect(() => {
@@ -90,20 +82,12 @@ export function useAuth(): AuthState {
       setState({ user: getStoredSession(), loading: false });
     };
 
-    const handleStorage = (ev: StorageEvent) => {
-      if (!ev.key || ev.key === STORAGE_KEY) {
-        sync();
-      }
-    };
-
-    window.addEventListener("storage", handleStorage);
+    window.addEventListener("storage", sync);
     window.addEventListener("ribooster-auth-changed", sync as EventListener);
-
-    // Initial sync just in case
     sync();
 
     return () => {
-      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("storage", sync);
       window.removeEventListener(
         "ribooster-auth-changed",
         sync as EventListener
@@ -113,3 +97,6 @@ export function useAuth(): AuthState {
 
   return state;
 }
+
+// ⭐ DEFAULT EXPORT (fixes the Vite build error!)
+export default useAuth;
