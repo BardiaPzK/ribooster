@@ -18,6 +18,15 @@ RUN npm run build
 FROM python:3.11-slim AS backend
 WORKDIR /app
 
+# Install ODBC drivers for pyodbc
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    unixodbc \
+    unixodbc-dev \
+    g++ \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && apt-get clean \
