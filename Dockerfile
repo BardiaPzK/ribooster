@@ -1,45 +1,51 @@
-# ------------------------------
-# 1) Frontend build
-# ------------------------------
-FROM node:20-alpine AS frontend-build
-WORKDIR /app
+# syntax=docker/dockerfile:1
 
-# Install frontend deps
+########################################
+# Stage 1: build frontend with Vite
+########################################
+FROM node:20-alpine AS frontend-build
+
+WORKDIR /app/frontend
+
+# Install deps first (better cache)
 COPY frontend/package*.json ./
 RUN npm install
 
-# Copy frontend source
+# Copy the rest of the frontend and build
 COPY frontend/ .
 RUN npm run build
 
-# ------------------------------
-# 2) Backend image
-# ------------------------------
+
+########################################
+# Stage 2: backend (FastAPI + Uvicorn)
+########################################
 FROM python:3.11-slim AS backend
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
 WORKDIR /app
 
-# Install ODBC drivers for pyodbc
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    unixodbc \
-    unixodbc-dev \
-    g++ \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# System deps for pyodbc (and compiling wheels)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        unixodbc \
+        unixodbc-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Backend source
-COPY backend/ ./backend
-
-# Built frontend
-COPY --from=frontend-build /app/dist ./frontend-dist
-
-# Python deps
+# Install Python deps
+COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy backend code
+COPY backend ./backend
+
+# Copy built frontend into the location expected by main.py
+# main.py uses FRONTEND_DIR = /app/frontend-dist
+COPY --from=frontend-build /app/frontend/dist ./frontend-dist
 
 EXPOSE 8000
 

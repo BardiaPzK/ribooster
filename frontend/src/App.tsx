@@ -1,9 +1,8 @@
 import React from "react";
 import { useRoutes, Navigate } from "react-router-dom";
 import { routes } from "./router";
-import { useAuth } from "./lib/auth";
+import useAuth from "./lib/auth";
 
-// Simple wrapper that redirects to /login if not authenticated
 function AppRoutes() {
   const { user, loading } = useAuth();
 
