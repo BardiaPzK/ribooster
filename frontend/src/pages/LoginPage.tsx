@@ -1,88 +1,133 @@
 // frontend/src/pages/LoginPage.tsx
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
-import { setAuthSession, isLoggedIn, isAdmin } from "../lib/auth";
+import { login, isLoggedIn, isAdmin, getSession, logout } from "../lib/auth";
 
 const LoginPage: React.FC = () => {
-  const [companyCode, setCompanyCode] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const nav = useNavigate();
 
+  const [companyCode, setCompanyCode] = useState("Admin");
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("admin");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // If already logged in, redirect
   useEffect(() => {
     if (isLoggedIn()) {
-      nav(isAdmin() ? "/admin" : "/dashboard", { replace: true });
+      nav(isAdmin() ? "/admin" : "/user", { replace: true });
     }
   }, [nav]);
 
-  const submit = async (e: React.FormEvent) => {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const res = await api.login(companyCode.trim(), username.trim(), password);
-      setAuthSession(res);
-      nav(res.is_admin ? "/admin" : "/dashboard", { replace: true });
-    } catch (err: any) {
-      setError(err?.message || "Login failed");
+      const sess = await login(companyCode.trim(), username.trim(), password);
+      console.log("Logged in:", sess);
+
+      if (sess.is_admin) {
+        nav("/admin", { replace: true });
+      } else {
+        nav("/user", { replace: true });
+      }
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message ?? "Login failed");
     } finally {
       setLoading(false);
     }
-  };
+  }
+
+  function handleLogout() {
+    logout();
+    setCompanyCode("Admin");
+    setUsername("admin");
+    setPassword("admin");
+    setError(null);
+  }
+
+  const existing = getSession();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 flex items-center justify-center px-4">
-      <div className="max-w-md w-full space-y-6">
-        <div className="text-center">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 to-violet-500 mb-3" />
-          <h1 className="text-2xl font-semibold">Sign in to ribooster</h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Use your company code and RIB credentials. For admin use{" "}
-            <span className="font-mono">Admin / admin / admin</span>.
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6 space-y-4">
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900">ribooster Login</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Sign in with your company code and RIB user.
           </p>
         </div>
-        <form onSubmit={submit} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6 space-y-4">
-          <div>
-            <label className="block text-sm mb-1">Company Code</label>
+
+        {existing && (
+          <div className="text-xs bg-emerald-50 border border-emerald-200 rounded p-2 text-emerald-800 flex justify-between items-center">
+            <span>
+              Already logged in as <b>{existing.username}</b>{" "}
+              {existing.is_admin ? "(admin)" : ""}
+            </span>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="ml-2 text-[11px] underline"
+            >
+              Logout
+            </button>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="space-y-1 text-sm">
+            <label className="font-medium text-slate-800">Company Code</label>
             <input
-              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="e.g. TNG-100 or Admin"
+              type="text"
+              className="w-full rounded border border-slate-300 px-2 py-1"
               value={companyCode}
               onChange={(e) => setCompanyCode(e.target.value)}
-              required
+              placeholder="Admin or e.g. TNG-100"
             />
           </div>
-          <div>
-            <label className="block text-sm mb-1">Username</label>
+
+          <div className="space-y-1 text-sm">
+            <label className="font-medium text-slate-800">Username</label>
             <input
-              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              type="text"
+              className="w-full rounded border border-slate-300 px-2 py-1"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              required
+              placeholder="Your RIB username"
             />
           </div>
-          <div>
-            <label className="block text-sm mb-1">Password</label>
+
+          <div className="space-y-1 text-sm">
+            <label className="font-medium text-slate-800">Password</label>
             <input
               type="password"
-              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full rounded border border-slate-300 px-2 py-1"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              required
             />
           </div>
-          {error && <div className="text-sm text-red-400">{error}</div>}
+
+          {error && (
+            <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">
+              {error}
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white py-2 text-sm font-medium transition disabled:opacity-60"
+            className="w-full rounded bg-blue-600 text-white text-sm py-2 hover:bg-blue-700 disabled:opacity-60"
           >
-            {loading ? "Signing in…" : "Continue"}
+            {loading ? "Signing in…" : "Sign in"}
           </button>
         </form>
+
+        <div className="text-[11px] text-slate-400">
+          Admin demo: Company code <b>Admin</b>, user <b>admin</b>, password{" "}
+          <b>admin</b>.
+        </div>
       </div>
     </div>
   );

@@ -1,102 +1,163 @@
 // frontend/src/lib/auth.ts
+// Central auth store + helper functions + React hook
 
-import { useEffect, useState } from "react";
-
-const STORAGE_KEY = "ribooster_session";
-
-export interface StoredSession {
+export type AuthSession = {
   token: string;
   is_admin: boolean;
   username: string;
   display_name: string;
-}
+  org_id?: string | null;
+  org_name?: string | null;
+  company_id?: string | null;
+  company_code?: string | null;
+  rib_role?: string | null;
+  rib_exp_ts?: number | null;
+};
 
-function emitAuthChange() {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event("ribooster-auth-changed"));
+const STORAGE_KEY = "ribooster.session";
+
+/**
+ * Save session to localStorage.
+ */
+export function setSession(sess: AuthSession | null): void {
+  if (!sess) {
+    localStorage.removeItem(STORAGE_KEY);
+    emitAuthChange(null);
+    return;
   }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(sess));
+  emitAuthChange(sess);
 }
 
-export function setAuthSession(res: {
-  token: string;
-  is_admin: boolean;
-  username: string;
-  display_name: string;
-}) {
-  const data: StoredSession = {
-    token: res.token,
-    is_admin: res.is_admin,
-    username: res.username,
-    display_name: res.display_name,
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  emitAuthChange();
-}
-
-export function getStoredSession(): StoredSession | null {
+/**
+ * Read session from localStorage.
+ */
+export function getSession(): AuthSession | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as StoredSession;
+    return JSON.parse(raw) as AuthSession;
   } catch {
     return null;
   }
 }
 
-export function getAuthToken(): string | null {
-  return getStoredSession()?.token ?? null;
-}
-
+/**
+ * Simple helpers for non-React code.
+ */
 export function isLoggedIn(): boolean {
-  return !!getAuthToken();
+  return !!getSession();
 }
 
 export function isAdmin(): boolean {
-  const s = getStoredSession();
+  const s = getSession();
   return !!s?.is_admin;
 }
 
-export function clearAuthSession() {
-  localStorage.removeItem(STORAGE_KEY);
-  emitAuthChange();
-}
-
-export interface AuthState {
-  user: StoredSession | null;
-  loading: boolean;
+export function getToken(): string | null {
+  return getSession()?.token ?? null;
 }
 
 /**
- * Hook that updates automatically when login/logout happens
+ * Low-level login call against /api/auth/login.
+ * Stores the session automatically and returns it.
  */
-export function useAuth(): AuthState {
-  const [state, setState] = useState<AuthState>({
-    user: typeof window === "undefined" ? null : getStoredSession(),
-    loading: false,
+export async function login(
+  companyCode: string,
+  username: string,
+  password: string
+): Promise<AuthSession> {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      company_code: companyCode,
+      username,
+      password,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const msg = body?.detail || `Login failed (${res.status})`;
+    throw new Error(msg);
+  }
+
+  const data = await res.json();
+
+  const sess: AuthSession = {
+    token: data.token,
+    is_admin: data.is_admin,
+    username: data.username,
+    display_name: data.display_name,
+    org_id: data.org_id ?? null,
+    org_name: data.org_name ?? null,
+    company_id: data.company_id ?? null,
+    company_code: data.company_code ?? null,
+    rib_role: data.rib_role ?? null,
+    rib_exp_ts: data.rib_exp_ts ?? null,
+  };
+
+  setSession(sess);
+  return sess;
+}
+
+/**
+ * Logout helper.
+ */
+export function logout(): void {
+  setSession(null);
+}
+
+// ───────────────────────── React hook ─────────────────────────
+
+type AuthListener = (sess: AuthSession | null) => void;
+
+const listeners = new Set<AuthListener>();
+
+function emitAuthChange(sess: AuthSession | null) {
+  for (const l of listeners) {
+    try {
+      l(sess);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function subscribe(listener: AuthListener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/**
+ * useAuth hook: React-friendly auth state.
+ */
+import { useEffect, useState } from "react";
+
+export function useAuth() {
+  const [session, setSessionState] = useState<AuthSession | null>(() => {
+    if (typeof window === "undefined") return null;
+    return getSession();
   });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const sync = () => {
-      setState({ user: getStoredSession(), loading: false });
-    };
-
-    window.addEventListener("storage", sync);
-    window.addEventListener("ribooster-auth-changed", sync as EventListener);
-    sync();
-
-    return () => {
-      window.removeEventListener("storage", sync);
-      window.removeEventListener(
-        "ribooster-auth-changed",
-        sync as EventListener
-      );
-    };
+    const unsub = subscribe((sess) => setSessionState(sess));
+    // Sync once on mount
+    setSessionState(getSession());
+    return unsub;
   }, []);
 
-  return state;
+  return {
+    user: session,
+    token: session?.token ?? null,
+    loading: false,
+  };
 }
 
-// ⭐ DEFAULT EXPORT (fixes the Vite build error!)
+// Default export for `import useAuth from "./lib/auth";`
 export default useAuth;
