@@ -1,115 +1,91 @@
 // frontend/src/router.tsx
-import React from "react";
-import {
-  createBrowserRouter,
-  Navigate,
-} from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
+import useAuth from "./lib/auth";
 
+// Pages
 import LoginPage from "./pages/LoginPage";
-import AdminDashboard from "./pages/admin/AdminDashboard";
-import AdminOrgs from "./pages/admin/OrgListPage";
-import AdminTickets from "./pages/admin/AdminTicketsPage";
+import UserDashboard from "./pages/UserDashboard";
 
-import UserDashboard from "./pages/user/UserDashboard";
-import UserTickets from "./pages/user/TicketsPage";
-import UserTicketView from "./pages/user/TicketViewPage";
-import UserProjects from "./pages/user/ProjectsPage";
-import UserHelpdesk from "./pages/user/HelpdeskPage";
+// Admin pages
+import AdminLayout from "./pages/admin/AdminLayout";
+import AdminOverview from "./pages/admin/AdminOverview";
+import AdminOrgs from "./pages/admin/AdminOrgs";
+import AdminTickets from "./pages/admin/AdminTickets";
+import AdminSettings from "./pages/admin/AdminSettings";
+
+// User pages
+import ProjectBackup from "./pages/user/ProjectBackup";
+import UserTickets from "./pages/user/UserTickets";
 import TextToSql from "./pages/user/TextToSql";
 
-import useAuth, { isAdmin, isLoggedIn } from "./lib/auth";
-
-
 // ─────────────────────────────────────────────
-// Helper routes
+// Wrapper components for auth
 // ─────────────────────────────────────────────
 
-// Wrapper: requires ANY logged-in session
 function RequireAuth({ children }: { children: JSX.Element }) {
   const { user } = useAuth();
-
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
+  if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
-// Wrapper: requires admin session
 function RequireAdmin({ children }: { children: JSX.Element }) {
   const { user } = useAuth();
-
-  if (!user || !user.is_admin) {
-    return <Navigate to="/login" replace />;
-  }
+  if (!user) return <Navigate to="/login" replace />;
+  if (!user.is_admin) return <Navigate to="/dashboard" replace />;
   return children;
 }
 
-// Wrapper: requires user (not admin)
 function RequireUser({ children }: { children: JSX.Element }) {
   const { user } = useAuth();
-
   if (!user) return <Navigate to="/login" replace />;
   if (user.is_admin) return <Navigate to="/admin" replace />;
-
   return children;
 }
 
+// ─────────────────────────────────────────────
+// Router definition
+// ─────────────────────────────────────────────
 
-// ─────────────────────────────────────────────
-// Main Router
-// ─────────────────────────────────────────────
-const router = createBrowserRouter([
-  //
+export const router = createBrowserRouter([
+  {
+    path: "/",
+    element: <Navigate to="/login" replace />,
+  },
+
+  // ───────────────────────────
   // LOGIN
-  //
+  // ───────────────────────────
   {
     path: "/login",
     element: <LoginPage />,
   },
 
-  //
-  // ROOT → check session → go to admin or user
-  //
-  {
-    path: "/",
-    element: (
-      <AuthRedirect />
-    ),
-  },
-
-  //
+  // ───────────────────────────
   // ADMIN ROUTES
-  //
+  // /admin/*
+  // ───────────────────────────
   {
     path: "/admin",
     element: (
       <RequireAdmin>
-        <AdminDashboard />
+        <AdminLayout />
       </RequireAdmin>
     ),
-  },
-  {
-    path: "/admin/organizations",
-    element: (
-      <RequireAdmin>
-        <AdminOrgs />
-      </RequireAdmin>
-    ),
-  },
-  {
-    path: "/admin/tickets",
-    element: (
-      <RequireAdmin>
-        <AdminTickets />
-      </RequireAdmin>
-    ),
+    children: [
+      { index: true, element: <AdminOverview /> },
+      { path: "overview", element: <AdminOverview /> },
+      { path: "orgs", element: <AdminOrgs /> },
+      { path: "tickets", element: <AdminTickets /> },
+      { path: "settings", element: <AdminSettings /> },
+    ],
   },
 
-  //
+  // ───────────────────────────
   // USER ROUTES
-  //
+  // /dashboard + /user/*
+  // ───────────────────────────
   {
-    path: "/user",
+    path: "/dashboard",
     element: (
       <RequireUser>
         <UserDashboard />
@@ -117,66 +93,42 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: "/user/tickets",
-    element: (
-      <RequireUser>
-        <UserTickets />
-      </RequireUser>
-    ),
-  },
-  {
-    path: "/user/tickets/:ticket_id",
-    element: (
-      <RequireUser>
-        <UserTicketView />
-      </RequireUser>
-    ),
-  },
-  {
-    path: "/user/projects",
-    element: (
-      <RequireUser>
-        <UserProjects />
-      </RequireUser>
-    ),
-  },
-  {
-    path: "/user/helpdesk",
-    element: (
-      <RequireUser>
-        <UserHelpdesk />
-      </RequireUser>
-    ),
-  },
-  {
-    path: "/user/textsql",
-    element: (
-      <RequireUser>
-        <TextToSql />
-      </RequireUser>
-    ),
+    path: "/user",
+    children: [
+      {
+        path: "backup",
+        element: (
+          <RequireUser>
+            <ProjectBackup />
+          </RequireUser>
+        ),
+      },
+      {
+        path: "tickets",
+        element: (
+          <RequireUser>
+            <UserTickets />
+          </RequireUser>
+        ),
+      },
+      {
+        path: "textsql",
+        element: (
+          <RequireUser>
+            <TextToSql />
+          </RequireUser>
+        ),
+      },
+    ],
   },
 
-  //
-  // FALLBACK → send to login
-  //
+  // ───────────────────────────
+  // FALLBACK
+  // ───────────────────────────
   {
     path: "*",
     element: <Navigate to="/login" replace />,
   },
 ]);
-
-
-// ─────────────────────────────────────────────
-// Redirect logic at root "/"
-// ─────────────────────────────────────────────
-function AuthRedirect() {
-  const { user } = useAuth();
-
-  if (!user) return <Navigate to="/login" replace />;
-  if (user.is_admin) return <Navigate to="/admin" replace />;
-  return <Navigate to="/user" replace />;
-}
-
 
 export default router;
