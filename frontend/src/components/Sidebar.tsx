@@ -11,11 +11,12 @@ const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin }) => {
   const location = useLocation();
 
   const userLinks = [
-    { to: "/dashboard", label: "Overview" },
-    { to: "/tickets", label: "Support Tickets" },
-    { to: "/projects/backup", label: "Project Backup" },
-    { to: "/text-to-sql", label: "Text to SQL" },
+    { to: "/user", label: "Overview" },
+    { to: "/user/tickets", label: "Support Tickets" },
+    { to: "/user/projects", label: "Project Backup" },
+    { to: "/user/text-sql", label: "Text to SQL" },
   ];
+
 
   // Admin nav is handled in AdminSidebar, this one is mainly user sidebar.
   const isActive = (path: string) => location.pathname === path;

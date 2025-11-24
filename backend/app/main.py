@@ -66,6 +66,10 @@ from .db import (
 
 # ───────────────────────── App setup ─────────────────────────
 
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    return RedirectResponse(url="/app/")
+
 app = FastAPI(title="ribooster API", version="0.4.0")
 
 origins = [

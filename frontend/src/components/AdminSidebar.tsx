@@ -41,7 +41,7 @@ const AdminSidebar: React.FC = () => {
         </div>
       </div>
       <nav className="flex-1 px-2 py-3 space-y-1">
-        <NavItem to="/admin/overview" label="Overview" />
+        <NavItem to="/admin" label="Overview" />
         <NavItem to="/admin/orgs" label="Organizations" />
         <NavItem to="/admin/tickets" label="Tickets" />
         <NavItem to="/admin/settings" label="Settings" />

@@ -16,13 +16,27 @@ function AppRoutes() {
     );
   }
 
-  // Not logged in → only allow /login
+  // Remove "/app" prefix and normalize
   const pathname = window.location.pathname.replace("/app", "") || "/";
-  const isLogin = pathname === "/login";
 
+  // Not logged in → redirect to login
+  const isLogin = pathname === "/login";
   if (!user && !isLogin) {
     return <Navigate to="/login" replace />;
   }
+
+  // --------------------------------------
+  //  ADMIN ROUTING FIX
+  // --------------------------------------
+
+  if (user?.is_admin && !pathname.startsWith("/admin")) {
+    return <Navigate to="/admin" replace />;
+  }
+
+  if (!user?.is_admin && pathname.startsWith("/admin")) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
 
   return element;
 }
