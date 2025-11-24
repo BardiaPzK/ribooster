@@ -68,7 +68,12 @@ from .db import (
 
 app = FastAPI(title="ribooster API", version="0.4.0")
 
-origins = ["*"]  # adjust later for production
+origins = [
+    "http://localhost:5173",
+    "https://ribooster-webapp.azurewebsites.net",
+    "https://ribooster-webapp.azurewebsites.net/app",
+    "https://app.ribooster.com",
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

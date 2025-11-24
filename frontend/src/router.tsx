@@ -1,42 +1,44 @@
-// frontend/src/router.tsx
 import React from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { RouteObject } from "react-router-dom";
 
 import LoginPage from "./pages/LoginPage";
 import UserDashboard from "./pages/UserDashboard";
-import UserTickets from "./pages/user/UserTickets";
-import ProjectBackup from "./pages/user/ProjectBackup";
-import TextToSql from "./pages/user/TextToSql";
 
+// user services
+import ProjectBackup from "./pages/user/ProjectBackup";
+import UserTickets from "./pages/user/UserTickets";
+// if you make a Text-to-SQL page:
+import TextSqlPage from "./pages/user/TextSqlPage";
+
+// admin pages
 import AdminLayout from "./pages/admin/AdminLayout";
 import AdminOverview from "./pages/admin/AdminOverview";
 import AdminOrgs from "./pages/admin/AdminOrgs";
 
-// If you have an AdminTickets page later, you can add it here.
-
-const AppRouter: React.FC = () => {
-  return (
-    <Routes>
-      {/* Login */}
-      <Route path="/" element={<LoginPage />} />
-
-      {/* User area */}
-      <Route path="/dashboard" element={<UserDashboard />} />
-      <Route path="/tickets" element={<UserTickets />} />
-      <Route path="/projects/backup" element={<ProjectBackup />} />
-      <Route path="/text-to-sql" element={<TextToSql />} />
-
-      {/* Admin area */}
-      <Route path="/admin" element={<AdminLayout />}>
-        <Route index element={<AdminOverview />} />
-        <Route path="orgs" element={<AdminOrgs />} />
-        {/* e.g. <Route path="tickets" element={<AdminTickets />} /> later */}
-      </Route>
-
-      {/* Fallback */}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
-  );
-};
-
-export default AppRouter;
+export const routes: RouteObject[] = [
+  {
+    path: "/login",
+    element: <LoginPage />,
+  },
+  {
+    path: "/",
+    element: <UserDashboard />, // default after login
+  },
+  {
+    path: "/user",
+    children: [
+      { index: true, element: <UserDashboard /> },
+      { path: "projects", element: <ProjectBackup /> },
+      { path: "tickets", element: <UserTickets /> },
+      { path: "text-sql", element: <TextSqlPage /> }, // new service
+    ],
+  },
+  {
+    path: "/admin",
+    element: <AdminLayout />,
+    children: [
+      { index: true, element: <AdminOverview /> },
+      { path: "orgs", element: <AdminOrgs /> },
+    ],
+  },
+];
