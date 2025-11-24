@@ -20,9 +20,10 @@ import requests
 from pydantic import BaseModel
 
 from .models import RIBSession
+from dataclasses import dataclass
 
-
-class AuthCfg(BaseModel):
+@dataclass
+class AuthCfg:
     host: str
     company: str
 
