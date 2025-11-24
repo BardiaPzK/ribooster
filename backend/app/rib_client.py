@@ -1,12 +1,8 @@
 """
 backend/app/rib_client.py
 
-Minimal RIB 4.0 HTTP client:
-- JWT login (basics/api/2.0/logon or auth/connect/token)
-- secureClientRolePart via checkcompanycode
-- Simple project listing
-
-Uses requests.Session with RIB standard headers.
+RIB 4.0 client using the STABLE login endpoint:
+    POST /basics/api/2.0/logon   ← this works on all RIB cloud systems
 """
 
 from __future__ import annotations
@@ -24,122 +20,74 @@ from .models import RIBSession
 
 # ───────────────────────── Config ─────────────────────────
 
-
 @dataclass
 class AuthCfg:
-    host: str   # e.g. "https://tng-linkdigital.rib40.cloud/itwo40/services"
-    company: str  # e.g. "TNG-100" (RIB company code)
+    host: str        # e.g. "https://tng-linkdigital.rib40.cloud/itwo40/services"
+    company: str     # e.g. "TNG-100"
 
 
-# ───────────────────────── Auth client ─────────────────────────
-
+# ───────────────────────── Auth ─────────────────────────
 
 class Auth:
-    """JWT login + header generator for RIB iTWO 4.0."""
+    """
+    RIB authentication using legacy but reliable endpoint:
+        POST /basics/api/2.0/logon
+    """
 
-    _LEEWAY_SEC = 300
-
-    def __init__(self, cfg: AuthCfg, *, client_tag: str = "ribooster"):
+    def __init__(self, cfg: AuthCfg, client_tag: str = "ribooster"):
         self.cfg = cfg
         self.sess = requests.Session()
         self.sess.headers.update({"X-Client-Tag": client_tag})
 
-        self.token: str = ""
-        self.role: str = ""
+        self.token = ""
+        self.role = ""
         self.exp_ts: int | None = None
-
-    # ───────── login + headers ─────────
 
     def login(self, username: str, password: str) -> RIBSession:
         """
-        Password-based login against /auth/connect/token.
-        If this returns 401, usually one of:
-          - wrong username / password
-          - wrong client_id / scope
-          - environment restricted (Scheduled Environment, etc.)
+        Stable RIB login. Returns:
+            - JWT token
+            - secureClientRolePart
+            - exp time
         """
 
-        url = f"{self.cfg.host}/auth/connect/token"
+        # 1) JWT LOGIN
+        url = f"{self.cfg.host}/basics/api/2.0/logon"
+        payload = {"username": username, "password": password}
 
-        # IMPORTANT:
-        # You MUST align client_id + scope with what Swagger uses for your server.
-        # Check in browser devtools -> Network -> token request.
-        data = {
-            "username": username,
-            "password": password,
-            "client_id": "itwo",          # CHANGE HERE if Swagger uses a different one
-            "grant_type": "password",
-            "scope": "openid profile",    # CHANGE HERE to match Swagger if needed
-        }
+        rsp = self.sess.post(url, json=payload, timeout=30)
 
-        try:
-            resp = self.sess.post(
-                url,
-                data=data,               # form-encoded
-                timeout=30,
-            )
-        except Exception as e:
-            raise RuntimeError(f"RIB auth network error: {e}") from e
-
-        # Better error messages: show full body for 4xx/5xx
-        if resp.status_code != 200:
-            body_text = resp.text.strip()
-            # This will bubble up to FastAPI and you see it in your 401 message
-            raise requests.HTTPError(
-                f"RIB auth failed {resp.status_code} at {url} - body: {body_text[:500]}",
-                response=resp,
+        if rsp.status_code != 200:
+            raise RuntimeError(
+                f"RIB login failed {rsp.status_code} at {url}. Body: {rsp.text[:300]}"
             )
 
-        body = resp.json()
+        # response is a quoted token string:  "eyJhbGciOi..."
+        jwt_token = rsp.text.strip('"')
 
-        access_token = body.get("access_token")
-        if not access_token:
-            raise RuntimeError(f"RIB auth: access_token missing in response: {body}")
+        if "." not in jwt_token:
+            raise RuntimeError(f"Invalid JWT returned: {jwt_token}")
 
-        # exp from payload or 'expires_in'
-        exp_ts = self._exp_epoch(access_token)
-        if "expires_in" in body:
-            exp_ts = int(time.time()) + int(body["expires_in"])
+        self.token = jwt_token
 
-        # Some servers send secureClientRole directly, some not.
-        secure_client_role = body.get("secureClientRole")
+        # 2) secureClientRolePart
+        self.role = self._fetch_role()
 
-        # Fill Auth fields so hdr() works for follow-up calls
-        self.token = access_token
-        self.exp_ts = exp_ts
-        self.role = secure_client_role or ""
+        # 3) expiry
+        self.exp_ts = self._decode_exp(jwt_token)
 
         return RIBSession(
-            access_token=access_token,
-            exp_ts=exp_ts,
-            secure_client_role=secure_client_role,
+            access_token=self.token,
+            exp_ts=self.exp_ts,
+            secure_client_role=self.role,
             host=self.cfg.host,
             company_code=self.cfg.company,
             username=username,
         )
 
-    def hdr(self) -> Dict[str, str]:
-        """Headers for authenticated calls."""
-        ctx = {
-            "dataLanguageId": 1,
-            "language": "en",
-            "culture": "en-gb",
-            "secureClientRole": self.role,
-        }
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Client-Context": json.dumps(ctx),
-            "accept": "application/json",
-            "Content-Type": "application/json",
-        }
+    # ───────── role lookup ─────────
 
-    # ───────── helpers ─────────
-
-    def _role(self) -> str:
-        """
-        Optional extra call to get secureClientRolePart if needed.
-        Not used right now, but kept for future.
-        """
+    def _fetch_role(self) -> str:
         url = (
             f"{self.cfg.host}/basics/publicapi/company/1.0/"
             f"checkcompanycode?requestedSignedInCompanyCode={self.cfg.company}"
@@ -149,30 +97,46 @@ class Auth:
             headers={"Authorization": f"Bearer {self.token}"},
             timeout=30,
         )
-        rsp.raise_for_status()
+        if rsp.status_code != 200:
+            raise RuntimeError("secureClientRolePart lookup failed: " + rsp.text)
+
         part = rsp.json().get("secureClientRolePart")
         if not part:
-            raise RuntimeError("secureClientRolePart missing")
+            raise RuntimeError("secureClientRolePart missing in response")
+
         return part
 
+    # ───────── headers for authenticated calls ─────────
+
+    def hdr(self) -> Dict[str, str]:
+        ctx = {
+            "dataLanguageId": 1,
+            "language": "en",
+            "culture": "en-gb",
+            "secureClientRole": self.role,
+        }
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Client-Context": json.dumps(ctx),
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    # ───────── JWT decoding ─────────
+
     @staticmethod
-    def _exp_epoch(jwt: str) -> int:
+    def _decode_exp(jwt_token: str) -> int:
         try:
-            pay = base64.urlsafe_b64decode(jwt.split(".")[1] + "===").decode()
-            return int(json.loads(pay)["exp"])
+            body = jwt_token.split(".")[1]
+            decoded = base64.urlsafe_b64decode(body + "===").decode()
+            return int(json.loads(decoded)["exp"])
         except Exception:
-            return int(time.time()) + 3600  # 1h fallback
+            return int(time.time()) + 3600  # fallback 1h
 
 
-# ───────────────────────── Simple Project API ─────────────────────────
-
+# ───────────────────────── Project API ─────────────────────────
 
 class ProjectApi:
-    """
-    GET /project/publicapi/project/3.0 with paging.
-    Only essentials for Project Backup & simple lists.
-    """
-
     def __init__(self, auth: Auth):
         self.auth = auth
         self.url = f"{auth.cfg.host}/project/publicapi/project/3.0"
@@ -180,29 +144,32 @@ class ProjectApi:
     def all(self) -> List[dict]:
         sess = self.auth.sess
         hdr = self.auth.hdr()
-        out: List[dict] = []
+
+        out = []
         skip, page = 0, 500
 
         while True:
-            r = sess.get(
-                f"{self.url}?$select=Id,ProjectName&$orderBy=ProjectName&$skip={skip}&$top={page}",
+            rsp = sess.get(
+                f"{self.url}?$skip={skip}&$top={page}",
                 headers=hdr,
-                timeout=60,
+                timeout=30,
             )
-            r.raise_for_status()
-            pl = r.json()
-            chunk = pl.get("value", pl) if isinstance(pl, dict) else pl
-            if not isinstance(chunk, list):
-                chunk = []
+            rsp.raise_for_status()
+            data = rsp.json()
+            chunk = data.get("value", [])
             out.extend(chunk)
+
             if len(chunk) < page:
                 break
+
             skip += page
+
         return out
 
 
+# ───────────────────────── Session Builder ─────────────────────────
+
 def auth_from_rib_session(sess: RIBSession) -> Auth:
-    """Build Auth from our stored RIB Session (no re-login)."""
     cfg = AuthCfg(host=sess.host, company=sess.company_code)
     a = Auth(cfg)
     a.token = sess.access_token
