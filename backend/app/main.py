@@ -1,12 +1,20 @@
 # backend/app/main.py
-from __future__ import annotations
-
 """
 FastAPI entrypoint for ribooster.
 
-- Admin login: CompanyCode = "Admin", username = "admin", password = "admin"
-- User login: Company code = RIB company (e.g. "TNG-100"), username/password forwarded to RIB.
+Features:
+- Admin login (companyCode = "Admin", username="admin", password="admin")
+- Org / company management in DB (SQLite by default)
+- Metrics per org (in memory)
+- Org user login via RIB 4.0 (JWT)
+- Tickets (user + admin), stored in DB
+- AI Helpdesk (conversation + messages), stored in DB
+- Simple RIB projects list + backup job records (DB)
+
+Static frontend (Vite build) is served from /app.
 """
+
+from __future__ import annotations
 
 import base64
 import json
@@ -17,51 +25,83 @@ from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Literal
 
 import requests
-from fastapi import FastAPI, HTTPException, Depends, Header, Body, status
+from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session as SASession
+from sqlalchemy import select
 
 from .models import (
     License,
     Organization,
     Company,
-    Session,
+    Session as SessionModel,
     RIBSession,
     MetricCounters,
-    Ticket,
     HelpdeskConversation,
     HelpdeskMessage,
-    ProjectBackupJob,
 )
 from . import storage
 from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
 from .ai_helpdesk import run_helpdesk_completion
-
+from .db import (
+    get_db,
+    init_db,
+    DBOrganization,
+    DBCompany,
+    DBTicket,
+    DBTicketMessage,
+    DBHelpdeskConversation,
+    DBHelpdeskMessage,
+    DBBackupJob,
+    DBPayment,
+    DBUserLog,
+    seed_default_org_company,
+)
 
 # ───────────────────────── App setup ─────────────────────────
 
-app = FastAPI(title="ribooster API", version="0.3.0")
+app = FastAPI(title="ribooster API", version="0.4.0")
 
+origins = ["*"]  # adjust later for production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # adjust later
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+def _startup_event() -> None:
+    """Create tables and seed initial org/company."""
+    init_db()
+    from .db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        seed_default_org_company(db)
+    finally:
+        db.close()
+
+
+# ───────────────────────── Static Frontend ─────────────────────────
+
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "frontend-dist")
 
 if os.path.isdir(FRONTEND_DIR):
 
+    # Serve asset files
     app.mount(
         "/app/assets",
         StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")),
         name="assets",
     )
 
+    # Serve index.html for all /app routes
     @app.get("/app", include_in_schema=False)
     @app.get("/app/", include_in_schema=False)
     @app.get("/app/{full_path:path}", include_in_schema=False)
@@ -72,23 +112,31 @@ if os.path.isdir(FRONTEND_DIR):
         return {"detail": "index.html not found"}
 
 
-# ───────────────────────── Session context ─────────────────────────
+# ───────────────────────── Auth helpers ─────────────────────────
 
 ADMIN_ACCESS_CODE = "Admin"
 ADMIN_USERS = {
-    "admin": "admin",
+    "admin": "admin",  # username: password
 }
 
 
-@dataclass
-class SessionCtx:
+class LoginRequest(BaseModel):
+    company_code: str
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
     token: str
-    user_id: str
+    is_admin: bool
     username: str
     display_name: str
-    is_admin: bool
     org_id: Optional[str] = None
+    org_name: Optional[str] = None
     company_id: Optional[str] = None
+    company_code: Optional[str] = None
+    rib_exp_ts: Optional[int] = None
+    rib_role: Optional[str] = None
 
 
 def _jwt_payload(tok: str) -> Dict[str, Any]:
@@ -116,22 +164,33 @@ def _display_from_jwt(tok: str, fallback: str) -> str:
     return fallback
 
 
+@dataclass
+class SessionCtx:
+    token: str
+    user_id: str
+    username: str
+    display_name: str
+    is_admin: bool
+    org_id: Optional[str] = None
+    company_id: Optional[str] = None
+
+
 def _session_from_token(token: str) -> SessionCtx:
-    sess = storage.get_session(token)
-    if not sess:
+    s = storage.get_session(token)
+    if not s:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
     now = int(time.time())
-    if sess.expires_at and sess.expires_at < now:
+    if s.expires_at and s.expires_at < now:
         storage.delete_session(token)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
     return SessionCtx(
-        token=sess.token,
-        user_id=sess.user_id,
-        username=sess.username,
-        display_name=sess.display_name,
-        is_admin=sess.is_admin,
-        org_id=sess.org_id,
-        company_id=sess.company_id,
+        token=s.token,
+        user_id=s.user_id,
+        username=s.username,
+        display_name=s.display_name,
+        is_admin=s.is_admin,
+        org_id=s.org_id,
+        company_id=s.company_id,
     )
 
 
@@ -141,8 +200,8 @@ def require_session(Authorization: Optional[str] = Header(None)) -> SessionCtx:
     parts = Authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
-    tok = parts[1]
-    return _session_from_token(tok)
+    token = parts[1]
+    return _session_from_token(token)
 
 
 def require_admin(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
@@ -159,6 +218,109 @@ def require_org_user(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
     return ctx
 
 
+# ───────────────────────── DB ↔ Pydantic helpers ─────────────────────────
+
+def _org_from_db(o: DBOrganization) -> Organization:
+    feats: Dict[str, bool] = {}
+    if o.features_json:
+        try:
+            feats = json.loads(o.features_json)
+        except Exception:
+            feats = {}
+    lic = License(
+        plan=o.license_plan or "monthly",
+        active=bool(o.license_active),
+        current_period_end=o.license_current_period_end,
+    )
+    return Organization(
+        org_id=o.org_id,
+        name=o.name,
+        contact_email=o.contact_email,
+        contact_phone=o.contact_phone,
+        notes=o.notes,
+        license=lic,
+        features=feats,
+    )
+
+
+def _company_from_db(c: DBCompany) -> Company:
+    allowed: List[str] = []
+    if c.allowed_users_json:
+        try:
+            allowed = json.loads(c.allowed_users_json)
+        except Exception:
+            allowed = []
+    return Company(
+        company_id=c.company_id,
+        org_id=c.org_id,
+        name=c.name,
+        code=c.code,
+        base_url=c.base_url,
+        rib_company_code=c.rib_company_code,
+        allowed_users=allowed,
+        ai_api_key=c.ai_api_key,
+    )
+
+
+def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
+    log = []
+    options = {}
+    if b.log_json:
+        try:
+            log = json.loads(b.log_json)
+        except Exception:
+            log = []
+    if b.options_json:
+        try:
+            options = json.loads(b.options_json)
+        except Exception:
+            options = {}
+    return BackupJobOut(
+        job_id=b.job_id,
+        org_id=b.org_id,
+        company_id=b.company_id,
+        user_id=b.user_id,
+        project_id=b.project_id,
+        project_name=b.project_name,
+        status=b.status,
+        created_at=b.created_at,
+        updated_at=b.updated_at,
+        log=log,
+        options=options,
+    )
+
+
+def _get_org_company_by_code(db: SASession, code: str) -> tuple[DBOrganization, DBCompany]:
+    stmt = (
+        select(DBOrganization, DBCompany)
+        .join(DBCompany, DBCompany.org_id == DBOrganization.org_id)
+        .where(DBCompany.code.ilike(code))
+    )
+    row = db.execute(stmt).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown company code")
+    return row[0], row[1]
+
+
+def _ensure_feature(ctx: SessionCtx, feature_key: str, db: SASession) -> None:
+    if not ctx.org_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org missing")
+    org = db.query(DBOrganization).filter(DBOrganization.org_id == ctx.org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org not found")
+    feats: Dict[str, bool] = {}
+    if org.features_json:
+        try:
+            feats = json.loads(org.features_json)
+        except Exception:
+            feats = {}
+    if not feats.get(feature_key, False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Feature not enabled for org",
+        )
+
+
 # ───────────────────────── Health ─────────────────────────
 
 @app.get("/health")
@@ -166,29 +328,10 @@ def health():
     return {"status": "ok", "time": int(time.time())}
 
 
-# ───────────────────────── Auth ─────────────────────────
-
-class LoginRequest(BaseModel):
-    company_code: str
-    username: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    token: str
-    is_admin: bool
-    username: str
-    display_name: str
-    org_id: Optional[str] = None
-    org_name: Optional[str] = None
-    company_id: Optional[str] = None
-    company_code: Optional[str] = None
-    rib_exp_ts: Optional[int] = None
-    rib_role: Optional[str] = None
-
+# ───────────────────────── Auth / Login ─────────────────────────
 
 @app.post("/api/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, db: SASession = Depends(get_db)):
     company_code = payload.company_code.strip()
     username = payload.username.strip()
     password = payload.password
@@ -198,13 +341,13 @@ def login(payload: LoginRequest):
 
     now = int(time.time())
 
-    # Admin login
+    # ─── Admin login ───────────────────────────────────────
     if company_code.lower() == ADMIN_ACCESS_CODE.lower():
         expected = ADMIN_USERS.get(username)
         if not expected or expected != password:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
-        sess = Session(
+        sess = SessionModel(
             token=uuid.uuid4().hex + uuid.uuid4().hex,
             user_id=f"admin:{username}",
             username=username,
@@ -224,19 +367,20 @@ def login(payload: LoginRequest):
             display_name="ribooster admin",
         )
 
-    # Org user login via RIB
-    try:
-        org, company = storage.get_org_and_company_by_code(company_code)
-    except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown company code")
+    # ─── Org user login via RIB ────────────────────────────
+    org_row, company_row = _get_org_company_by_code(db, company_code)
+    org = _org_from_db(org_row)
+    company = _company_from_db(company_row)
 
     lic: License = org.license
     if not lic.active or lic.current_period_end < now:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License inactive or expired")
 
+    # optional allowed users check
     if company.allowed_users and username not in company.allowed_users:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not allowed for this company")
 
+    # RIB login
     auth = Auth(AuthCfg(host=company.base_url, company=company.rib_company_code))
     try:
         rib_sess = auth.login(username, password)
@@ -269,7 +413,7 @@ def login(payload: LoginRequest):
 
     display_name = _display_from_jwt(rib_sess.access_token, username)
 
-    backend_sess = Session(
+    backend_sess = SessionModel(
         token=uuid.uuid4().hex + uuid.uuid4().hex,
         user_id=f"{org.org_id}:{username}",
         username=username,
@@ -305,27 +449,23 @@ def login(payload: LoginRequest):
     )
 
 
-class MeResponse(BaseModel):
-    token: str
-    user_id: str
-    username: str
-    display_name: str
-    is_admin: bool
-    org_id: Optional[str] = None
-    company_id: Optional[str] = None
-
-
-@app.get("/api/auth/me", response_model=MeResponse)
+@app.get("/api/auth/me")
 def me(ctx: SessionCtx = Depends(require_session)):
-    return MeResponse(
-        token=ctx.token,
-        user_id=ctx.user_id,
-        username=ctx.username,
-        display_name=ctx.display_name,
-        is_admin=ctx.is_admin,
-        org_id=ctx.org_id,
-        company_id=ctx.company_id,
-    )
+    return {
+        "token": ctx.token,
+        "user_id": ctx.user_id,
+        "username": ctx.username,
+        "display_name": ctx.display_name,
+        "is_admin": ctx.is_admin,
+        "org_id": ctx.org_id,
+        "company_id": ctx.company_id,
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(ctx: SessionCtx = Depends(require_session)):
+    storage.delete_session(ctx.token)
+    return {"ok": True}
 
 
 # ───────────────────────── User context ─────────────────────────
@@ -336,15 +476,17 @@ class UserContext(BaseModel):
 
 
 @app.get("/api/user/context", response_model=UserContext)
-def user_context(ctx: SessionCtx = Depends(require_org_user)):
-    org = storage.ORGS.get(ctx.org_id or "")
-    comp = storage.COMPANIES.get(ctx.company_id or "")
-    if not org or not comp:
+def user_context(ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    if not ctx.org_id or not ctx.company_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing org/company on session")
+    o = db.query(DBOrganization).filter(DBOrganization.org_id == ctx.org_id).first()
+    c = db.query(DBCompany).filter(DBCompany.company_id == ctx.company_id).first()
+    if not o or not c:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org or company not found")
-    return UserContext(org=org, company=comp)
+    return UserContext(org=_org_from_db(o), company=_company_from_db(c))
 
 
-# ───────────────────────── Admin: orgs & metrics ─────────────────────────
+# ───────────────────────── Admin: Orgs & Companies ─────────────────────────
 
 class OrgListItem(BaseModel):
     org: Organization
@@ -385,85 +527,144 @@ class AdminUpdateCompanyRequest(BaseModel):
 
 
 @app.get("/api/admin/orgs", response_model=List[OrgListItem])
-def admin_list_orgs(ctx: SessionCtx = Depends(require_admin)):
+def admin_list_orgs(ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
+    rows = (
+        db.query(DBOrganization, DBCompany)
+        .join(DBCompany, DBCompany.org_id == DBOrganization.org_id)
+        .all()
+    )
     out: List[OrgListItem] = []
-    for org in storage.ORGS.values():
-        comp = next((c for c in storage.COMPANIES.values() if c.org_id == org.org_id), None)
+    for o, c in rows:
+        org = _org_from_db(o)
+        company = _company_from_db(c)
         metrics = storage.METRICS.get(org.org_id)
-        if comp:
-            out.append(OrgListItem(org=org, company=comp, metrics=metrics))
+        out.append(OrgListItem(org=org, company=company, metrics=metrics))
     return out
 
 
 @app.post("/api/admin/orgs", response_model=OrgListItem)
-def admin_create_org(payload: AdminCreateOrgRequest, ctx: SessionCtx = Depends(require_admin)):
-    org, comp = storage.create_org_and_company(
+def admin_create_org(
+    payload: AdminCreateOrgRequest,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    now = int(time.time())
+    org_id = f"org_{uuid.uuid4().hex[:10]}"
+    company_id = f"comp_{uuid.uuid4().hex[:10]}"
+
+    lic_end = payload.current_period_end or (now + 365 * 24 * 3600)
+
+    # default features
+    features = {
+        "projects.backup": True,
+        "ai.helpdesk": True,
+    }
+
+    o = DBOrganization(
+        org_id=org_id,
         name=payload.name,
         contact_email=payload.contact_email,
         contact_phone=payload.contact_phone,
         notes=payload.notes,
-        plan=payload.plan,
-        current_period_end=payload.current_period_end,
+        license_plan=payload.plan,
+        license_active=True,
+        license_current_period_end=lic_end,
+        features_json=json.dumps(features),
+    )
+
+    allowed = payload.allowed_users or []
+    c = DBCompany(
+        company_id=company_id,
+        org_id=org_id,
+        name=payload.company_code,
+        code=payload.company_code,
         base_url=payload.base_url,
         rib_company_code=payload.rib_company_code,
-        code=payload.company_code,
-        allowed_users=payload.allowed_users,
+        allowed_users_json=json.dumps(allowed),
+        ai_api_key=None,
     )
+
+    db.add(o)
+    db.add(c)
+    db.commit()
+    db.refresh(o)
+    db.refresh(c)
+
+    org = _org_from_db(o)
+    company = _company_from_db(c)
     metrics = storage.METRICS.get(org.org_id)
-    return OrgListItem(org=org, company=comp, metrics=metrics)
+    return OrgListItem(org=org, company=company, metrics=metrics)
 
 
 @app.put("/api/admin/orgs/{org_id}", response_model=Organization)
-def admin_update_org(org_id: str, payload: AdminUpdateOrgRequest, ctx: SessionCtx = Depends(require_admin)):
-    org = storage.ORGS.get(org_id)
-    if not org:
+def admin_update_org(
+    org_id: str,
+    payload: AdminUpdateOrgRequest,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    o = db.query(DBOrganization).filter(DBOrganization.org_id == org_id).first()
+    if not o:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
 
-    data = org.model_copy()
     if payload.name is not None:
-        data.name = payload.name
+        o.name = payload.name
     if payload.contact_email is not None:
-        data.contact_email = payload.contact_email
+        o.contact_email = payload.contact_email
     if payload.contact_phone is not None:
-        data.contact_phone = payload.contact_phone
+        o.contact_phone = payload.contact_phone
     if payload.notes is not None:
-        data.notes = payload.notes
+        o.notes = payload.notes
     if payload.plan is not None:
-        data.license.plan = payload.plan
+        o.license_plan = payload.plan
     if payload.current_period_end is not None:
-        data.license.current_period_end = payload.current_period_end
+        o.license_current_period_end = payload.current_period_end
     if payload.active is not None:
-        data.license.active = payload.active
+        o.license_active = payload.active
     if payload.features is not None:
-        new_feats = dict(data.features)
-        new_feats.update(payload.features)
-        data.features = new_feats
+        existing: Dict[str, bool] = {}
+        if o.features_json:
+            try:
+                existing = json.loads(o.features_json)
+            except Exception:
+                existing = {}
+        existing.update(payload.features)
+        o.features_json = json.dumps(existing)
 
-    storage.update_org(data)
-    return data
+    db.commit()
+    db.refresh(o)
+    return _org_from_db(o)
 
 
 @app.put("/api/admin/companies/{company_id}", response_model=Company)
-def admin_update_company(company_id: str, payload: AdminUpdateCompanyRequest, ctx: SessionCtx = Depends(require_admin)):
-    comp = storage.COMPANIES.get(company_id)
-    if not comp:
+def admin_update_company(
+    company_id: str,
+    payload: AdminUpdateCompanyRequest,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    c = db.query(DBCompany).filter(DBCompany.company_id == company_id).first()
+    if not c:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
-    data = comp.model_copy()
     if payload.base_url is not None:
-        data.base_url = payload.base_url
+        c.base_url = payload.base_url
     if payload.rib_company_code is not None:
-        data.rib_company_code = payload.rib_company_code
+        c.rib_company_code = payload.rib_company_code
     if payload.company_code is not None:
-        data.code = payload.company_code
+        c.code = payload.company_code
+        c.name = payload.company_code
     if payload.allowed_users is not None:
-        data.allowed_users = payload.allowed_users
+        c.allowed_users_json = json.dumps(payload.allowed_users)
     if payload.ai_api_key is not None:
-        data.ai_api_key = payload.ai_api_key
+        c.ai_api_key = payload.ai_api_key
 
-    storage.update_company(data)
-    return data
+    db.commit()
+    db.refresh(c)
+    return _company_from_db(c)
 
+
+# ───────────────────────── Admin: Metrics ─────────────────────────
 
 class MetricsOverviewItem(BaseModel):
     org_id: str
@@ -474,13 +675,15 @@ class MetricsOverviewItem(BaseModel):
 
 
 @app.get("/api/admin/metrics/overview", response_model=List[MetricsOverviewItem])
-def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin)):
+def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
+    org_rows = db.query(DBOrganization).all()
     out: List[MetricsOverviewItem] = []
-    for org_id, org in storage.ORGS.items():
-        mc = storage.METRICS.get(org_id, MetricCounters())
+    for o in org_rows:
+        org = _org_from_db(o)
+        mc = storage.METRICS.get(org.org_id, MetricCounters())
         out.append(
             MetricsOverviewItem(
-                org_id=org_id,
+                org_id=org.org_id,
                 org_name=org.name,
                 total_requests=mc.total_requests,
                 total_rib_calls=mc.total_rib_calls,
@@ -491,12 +694,32 @@ def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin)):
     return out
 
 
-# ───────────────────────── Tickets (user) ─────────────────────────
+# ───────────────────────── Tickets (User + Admin) ─────────────────────────
 
 class CreateTicketRequest(BaseModel):
     subject: str
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
     text: str
+
+
+class TicketMessageOut(BaseModel):
+    message_id: str
+    timestamp: int
+    sender: str
+    text: str
+
+
+class TicketOut(BaseModel):
+    ticket_id: str
+    org_id: str
+    company_id: str
+    user_id: str
+    subject: str
+    priority: str
+    status: str
+    created_at: int
+    updated_at: int
+    messages: List[TicketMessageOut]
 
 
 class TicketListItem(BaseModel):
@@ -509,61 +732,182 @@ class TicketListItem(BaseModel):
 
 
 @app.get("/api/user/tickets", response_model=List[TicketListItem])
-def user_list_tickets(ctx: SessionCtx = Depends(require_org_user)):
+def user_list_tickets(ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    rows = (
+        db.query(DBTicket)
+        .filter(DBTicket.org_id == ctx.org_id, DBTicket.user_id == ctx.user_id)
+        .order_by(DBTicket.updated_at.desc())
+        .all()
+    )
     items: List[TicketListItem] = []
-    for t in storage.TICKETS.values():
-        if t.org_id == ctx.org_id and t.user_id == ctx.user_id:
-            items.append(
-                TicketListItem(
-                    ticket_id=t.ticket_id,
-                    subject=t.subject,
-                    priority=t.priority,
-                    status=t.status,
-                    created_at=t.created_at,
-                    updated_at=t.updated_at,
-                )
+    for t in rows:
+        items.append(
+            TicketListItem(
+                ticket_id=t.ticket_id,
+                subject=t.subject,
+                priority=t.priority,
+                status=t.status,
+                created_at=t.created_at,
+                updated_at=t.updated_at,
             )
-    items.sort(key=lambda x: x.updated_at, reverse=True)
+        )
     return items
 
 
-@app.post("/api/user/tickets", response_model=Ticket)
-def user_create_ticket(payload: CreateTicketRequest, ctx: SessionCtx = Depends(require_org_user)):
-    t = storage.create_ticket(
+@app.post("/api/user/tickets", response_model=TicketOut)
+def user_create_ticket(
+    payload: CreateTicketRequest,
+    ctx: SessionCtx = Depends(require_org_user),
+    db: SASession = Depends(get_db),
+):
+    now = int(time.time())
+    ticket_id = f"t_{uuid.uuid4().hex[:10]}"
+    msg_id = f"m_{uuid.uuid4().hex[:10]}"
+
+    t = DBTicket(
+        ticket_id=ticket_id,
         org_id=ctx.org_id,
         company_id=ctx.company_id,
         user_id=ctx.user_id,
         subject=payload.subject,
         priority=payload.priority,
+        status="open",
+        created_at=now,
+        updated_at=now,
+    )
+    m = DBTicketMessage(
+        message_id=msg_id,
+        ticket_id=ticket_id,
+        timestamp=now,
+        sender="user",
         text=payload.text,
     )
+    db.add(t)
+    db.add(m)
+    db.commit()
+    db.refresh(t)
+
     storage.record_request(ctx.org_id, "tickets.create")
-    return t
+
+    return TicketOut(
+        ticket_id=t.ticket_id,
+        org_id=t.org_id,
+        company_id=t.company_id,
+        user_id=t.user_id,
+        subject=t.subject,
+        priority=t.priority,
+        status=t.status,
+        created_at=t.created_at,
+        updated_at=t.updated_at,
+        messages=[
+            TicketMessageOut(
+                message_id=m.message_id,
+                timestamp=m.timestamp,
+                sender=m.sender,
+                text=m.text,
+            )
+        ],
+    )
 
 
-@app.get("/api/user/tickets/{ticket_id}", response_model=Ticket)
-def user_get_ticket(ticket_id: str, ctx: SessionCtx = Depends(require_org_user)):
-    t = storage.TICKETS.get(ticket_id)
-    if not t or t.org_id != ctx.org_id or t.user_id != ctx.user_id:
+@app.get("/api/user/tickets/{ticket_id}", response_model=TicketOut)
+def user_get_ticket(ticket_id: str, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    t = (
+        db.query(DBTicket)
+        .filter(DBTicket.ticket_id == ticket_id, DBTicket.org_id == ctx.org_id, DBTicket.user_id == ctx.user_id)
+        .first()
+    )
+    if not t:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
-    return t
+    msgs = (
+        db.query(DBTicketMessage)
+        .filter(DBTicketMessage.ticket_id == ticket_id)
+        .order_by(DBTicketMessage.timestamp)
+        .all()
+    )
+    return TicketOut(
+        ticket_id=t.ticket_id,
+        org_id=t.org_id,
+        company_id=t.company_id,
+        user_id=t.user_id,
+        subject=t.subject,
+        priority=t.priority,
+        status=t.status,
+        created_at=t.created_at,
+        updated_at=t.updated_at,
+        messages=[
+            TicketMessageOut(
+                message_id=m.message_id,
+                timestamp=m.timestamp,
+                sender=m.sender,
+                text=m.text,
+            )
+            for m in msgs
+        ],
+    )
 
 
 class TicketReplyRequest(BaseModel):
     text: str
 
 
-@app.post("/api/user/tickets/{ticket_id}/reply", response_model=Ticket)
-def user_reply_ticket(ticket_id: str, payload: TicketReplyRequest, ctx: SessionCtx = Depends(require_org_user)):
-    t = storage.TICKETS.get(ticket_id)
-    if not t or t.org_id != ctx.org_id or t.user_id != ctx.user_id:
+@app.post("/api/user/tickets/{ticket_id}/reply", response_model=TicketOut)
+def user_reply_ticket(
+    ticket_id: str,
+    payload: TicketReplyRequest,
+    ctx: SessionCtx = Depends(require_org_user),
+    db: SASession = Depends(get_db),
+):
+    t = (
+        db.query(DBTicket)
+        .filter(DBTicket.ticket_id == ticket_id, DBTicket.org_id == ctx.org_id, DBTicket.user_id == ctx.user_id)
+        .first()
+    )
+    if not t:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
-    t = storage.add_ticket_message(ticket_id, "user", payload.text)
+
+    now = int(time.time())
+    m = DBTicketMessage(
+        message_id=f"m_{uuid.uuid4().hex[:10]}",
+        ticket_id=ticket_id,
+        timestamp=now,
+        sender="user",
+        text=payload.text,
+    )
+    t.updated_at = now
+    db.add(m)
+    db.commit()
+
+    msgs = (
+        db.query(DBTicketMessage)
+        .filter(DBTicketMessage.ticket_id == ticket_id)
+        .order_by(DBTicketMessage.timestamp)
+        .all()
+    )
+
     storage.record_request(ctx.org_id, "tickets.reply")
-    return t
 
+    return TicketOut(
+        ticket_id=t.ticket_id,
+        org_id=t.org_id,
+        company_id=t.company_id,
+        user_id=t.user_id,
+        subject=t.subject,
+        priority=t.priority,
+        status=t.status,
+        created_at=t.created_at,
+        updated_at=t.updated_at,
+        messages=[
+            TicketMessageOut(
+                message_id=mm.message_id,
+                timestamp=mm.timestamp,
+                sender=mm.sender,
+                text=mm.text,
+            )
+            for mm in msgs
+        ],
+    )
 
-# ───────────────────────── Tickets (admin) ─────────────────────────
 
 class AdminTicketUpdateRequest(BaseModel):
     status: Optional[Literal["open", "in_progress", "done"]] = None
@@ -571,29 +915,104 @@ class AdminTicketUpdateRequest(BaseModel):
     text: Optional[str] = None
 
 
-@app.get("/api/admin/tickets", response_model=List[Ticket])
-def admin_list_tickets(ctx: SessionCtx = Depends(require_admin)):
-    return sorted(storage.TICKETS.values(), key=lambda t: t.updated_at, reverse=True)
+@app.get("/api/admin/tickets", response_model=List[TicketOut])
+def admin_list_tickets(ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
+    tickets = db.query(DBTicket).order_by(DBTicket.updated_at.desc()).all()
+    out: List[TicketOut] = []
+    for t in tickets:
+        msgs = (
+            db.query(DBTicketMessage)
+            .filter(DBTicketMessage.ticket_id == t.ticket_id)
+            .order_by(DBTicketMessage.timestamp)
+            .all()
+        )
+        out.append(
+            TicketOut(
+                ticket_id=t.ticket_id,
+                org_id=t.org_id,
+                company_id=t.company_id,
+                user_id=t.user_id,
+                subject=t.subject,
+                priority=t.priority,
+                status=t.status,
+                created_at=t.created_at,
+                updated_at=t.updated_at,
+                messages=[
+                    TicketMessageOut(
+                        message_id=m.message_id,
+                        timestamp=m.timestamp,
+                        sender=m.sender,
+                        text=m.text,
+                    )
+                    for m in msgs
+                ],
+            )
+        )
+    return out
 
 
-@app.post("/api/admin/tickets/{ticket_id}/reply", response_model=Ticket)
-def admin_reply_ticket(ticket_id: str, payload: AdminTicketUpdateRequest, ctx: SessionCtx = Depends(require_admin)):
-    t = storage.TICKETS.get(ticket_id)
+@app.post("/api/admin/tickets/{ticket_id}/reply", response_model=TicketOut)
+def admin_reply_ticket(
+    ticket_id: str,
+    payload: AdminTicketUpdateRequest,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    t = db.query(DBTicket).filter(DBTicket.ticket_id == ticket_id).first()
     if not t:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
+    now = int(time.time())
     if payload.text:
-        t = storage.add_ticket_message(ticket_id, "admin", payload.text)
+        m = DBTicketMessage(
+            message_id=f"m_{uuid.uuid4().hex[:10]}",
+            ticket_id=ticket_id,
+            timestamp=now,
+            sender="admin",
+            text=payload.text,
+        )
+        db.add(m)
+        t.updated_at = now
+
     if payload.status is not None:
         t.status = payload.status
     if payload.priority is not None:
         t.priority = payload.priority
 
-    storage.TICKETS[ticket_id] = t
-    return t
+    db.commit()
+
+    msgs = (
+        db.query(DBTicketMessage)
+        .filter(DBTicketMessage.ticket_id == ticket_id)
+        .order_by(DBTicketMessage.timestamp)
+        .all()
+    )
+
+    storage.record_request(t.org_id, "tickets.admin.reply")
+
+    return TicketOut(
+        ticket_id=t.ticket_id,
+        org_id=t.org_id,
+        company_id=t.company_id,
+        user_id=t.user_id,
+        subject=t.subject,
+        priority=t.priority,
+        status=t.status,
+        created_at=t.created_at,
+        updated_at=t.updated_at,
+        messages=[
+            TicketMessageOut(
+                message_id=m.message_id,
+                timestamp=m.timestamp,
+                sender=m.sender,
+                text=m.text,
+            )
+            for m in msgs
+        ],
+    )
 
 
-# ───────────────────────── Helpdesk (AI) ─────────────────────────
+# ───────────────────────── Helpdesk (AI Assistant) ─────────────────────────
 
 class HelpdeskChatRequest(BaseModel):
     conversation_id: Optional[str] = None
@@ -604,41 +1023,116 @@ class HelpdeskConversationOut(HelpdeskConversation):
     pass
 
 
-def _ensure_feature(ctx: SessionCtx, feature_key: str) -> None:
-    org = storage.ORGS.get(ctx.org_id or "")
-    if not org:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org missing")
-    if not org.features.get(feature_key, False):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Feature not enabled for org")
-
-
 @app.get("/api/user/helpdesk/conversations", response_model=List[HelpdeskConversationOut])
-def list_helpdesk_conversations(ctx: SessionCtx = Depends(require_org_user)):
-    _ensure_feature(ctx, "ai.helpdesk")
-    convs = storage.get_user_conversations(ctx.org_id, ctx.company_id, ctx.user_id)
-    convs.sort(key=lambda c: c.updated_at, reverse=True)
-    return convs
+def list_helpdesk_conversations(ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    _ensure_feature(ctx, "ai.helpdesk", db)
+
+    conv_rows = (
+        db.query(DBHelpdeskConversation)
+        .filter(
+            DBHelpdeskConversation.org_id == ctx.org_id,
+            DBHelpdeskConversation.company_id == ctx.company_id,
+            DBHelpdeskConversation.user_id == ctx.user_id,
+        )
+        .order_by(DBHelpdeskConversation.updated_at.desc())
+        .all()
+    )
+
+    conversations: List[HelpdeskConversation] = []
+    for c in conv_rows:
+        msgs = (
+            db.query(DBHelpdeskMessage)
+            .filter(DBHelpdeskMessage.conversation_id == c.conversation_id)
+            .order_by(DBHelpdeskMessage.timestamp)
+            .all()
+        )
+        conversations.append(
+            HelpdeskConversation(
+                conversation_id=c.conversation_id,
+                org_id=c.org_id,
+                company_id=c.company_id,
+                user_id=c.user_id,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+                messages=[
+                    HelpdeskMessage(
+                        message_id=m.message_id,
+                        timestamp=m.timestamp,
+                        sender=m.sender,
+                        text=m.text,
+                    )
+                    for m in msgs
+                ],
+            )
+        )
+    return conversations
 
 
 @app.post("/api/user/helpdesk/chat", response_model=HelpdeskConversationOut)
-async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(require_org_user)):
-    _ensure_feature(ctx, "ai.helpdesk")
+async def helpdesk_chat(
+    payload: HelpdeskChatRequest,
+    ctx: SessionCtx = Depends(require_org_user),
+    db: SASession = Depends(get_db),
+):
+    _ensure_feature(ctx, "ai.helpdesk", db)
 
-    company = storage.COMPANIES.get(ctx.company_id or "")
+    company = db.query(DBCompany).filter(DBCompany.company_id == ctx.company_id).first()
     if not company:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company not found")
     if not company.ai_api_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="AI key not configured for this company")
 
+    # load or create conversation
     if payload.conversation_id:
-        if payload.conversation_id not in storage.HELPDESK_CONVERSATIONS:
+        c = (
+            db.query(DBHelpdeskConversation)
+            .filter(DBHelpdeskConversation.conversation_id == payload.conversation_id)
+            .first()
+        )
+        if not c:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-        conv = storage.get_conversation(payload.conversation_id)
-        if conv.org_id != ctx.org_id or conv.company_id != ctx.company_id or conv.user_id != ctx.user_id:
+        if c.org_id != ctx.org_id or c.company_id != ctx.company_id or c.user_id != ctx.user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conversation not owned by user")
     else:
-        conv = storage.create_conversation(ctx.org_id, ctx.company_id, ctx.user_id)
+        now = int(time.time())
+        cid = f"conv_{uuid.uuid4().hex[:10]}"
+        c = DBHelpdeskConversation(
+            conversation_id=cid,
+            org_id=ctx.org_id,
+            company_id=ctx.company_id,
+            user_id=ctx.user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(c)
+        db.commit()
+        db.refresh(c)
 
+    msgs = (
+        db.query(DBHelpdeskMessage)
+        .filter(DBHelpdeskMessage.conversation_id == c.conversation_id)
+        .order_by(DBHelpdeskMessage.timestamp)
+        .all()
+    )
+    conv = HelpdeskConversation(
+        conversation_id=c.conversation_id,
+        org_id=c.org_id,
+        company_id=c.company_id,
+        user_id=c.user_id,
+        created_at=c.created_at,
+        updated_at=c.updated_at,
+        messages=[
+            HelpdeskMessage(
+                message_id=m.message_id,
+                timestamp=m.timestamp,
+                sender=m.sender,
+                text=m.text,
+            )
+            for m in msgs
+        ],
+    )
+
+    # add user message (both DB + in-memory conv)
     now = int(time.time())
     user_msg = HelpdeskMessage(
         message_id=f"msg_{uuid.uuid4().hex[:10]}",
@@ -647,13 +1141,22 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
         text=payload.text,
     )
     conv.messages.append(user_msg)
+    db.add(
+        DBHelpdeskMessage(
+            message_id=user_msg.message_id,
+            conversation_id=c.conversation_id,
+            timestamp=now,
+            sender="user",
+            text=payload.text,
+        )
+    )
+    c.updated_at = now
+    db.commit()
 
+    # call AI backend
     try:
         answer = await run_helpdesk_completion(company.ai_api_key, conv, payload.text)
     except Exception as e:
-        conv.messages.pop()
-        conv.updated_at = int(time.time())
-        storage.save_conversation(conv)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Helpdesk error: {e}")
 
     ai_msg = HelpdeskMessage(
@@ -663,14 +1166,25 @@ async def helpdesk_chat(payload: HelpdeskChatRequest, ctx: SessionCtx = Depends(
         text=answer,
     )
     conv.messages.append(ai_msg)
-    conv.updated_at = int(time.time())
-    storage.save_conversation(conv)
+
+    db.add(
+        DBHelpdeskMessage(
+            message_id=ai_msg.message_id,
+            conversation_id=c.conversation_id,
+            timestamp=ai_msg.timestamp,
+            sender="ai",
+            text=ai_msg.text,
+        )
+    )
+    c.updated_at = int(time.time())
+    db.commit()
 
     storage.record_request(ctx.org_id, "helpdesk.chat", feature="ai.helpdesk")
+
     return conv
 
 
-# ───────────────────────── Projects & backup ─────────────────────────
+# ───────────────────────── Projects & Backup ─────────────────────────
 
 class ProjectOut(BaseModel):
     id: str
@@ -678,8 +1192,8 @@ class ProjectOut(BaseModel):
 
 
 @app.get("/api/user/projects", response_model=List[ProjectOut])
-def list_projects(ctx: SessionCtx = Depends(require_org_user)):
-    _ensure_feature(ctx, "projects.backup")
+def list_projects(ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    _ensure_feature(ctx, "projects.backup", db)
 
     sess = storage.get_session(ctx.token)
     if not sess or not sess.rib_session:
@@ -711,36 +1225,73 @@ class BackupRequest(BaseModel):
     include_activities: bool = True
 
 
-@app.post("/api/user/projects/backup", response_model=ProjectBackupJob)
-def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_user)):
-    _ensure_feature(ctx, "projects.backup")
+class BackupJobOut(BaseModel):
+    job_id: str
+    org_id: str
+    company_id: str
+    user_id: str
+    project_id: str
+    project_name: str
+    status: str
+    created_at: int
+    updated_at: int
+    log: List[str]
+    options: Dict[str, Any]
 
-    job = storage.create_backup_job(
+
+@app.post("/api/user/projects/backup", response_model=BackupJobOut)
+def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    """
+    For now this just creates a job record and marks it as completed immediately.
+    Later you can replace this with a real async ZIP export.
+    """
+    _ensure_feature(ctx, "projects.backup", db)
+
+    now = int(time.time())
+    job_id = f"job_{uuid.uuid4().hex[:10]}"
+
+    options = {
+        "include_estimates": payload.include_estimates,
+        "include_lineitems": payload.include_lineitems,
+        "include_resources": payload.include_resources,
+        "include_activities": payload.include_activities,
+    }
+    log = ["Backup job placeholder completed (no real ZIP yet)."]
+
+    job = DBBackupJob(
+        job_id=job_id,
         org_id=ctx.org_id,
         company_id=ctx.company_id,
         user_id=ctx.user_id,
         project_id=payload.project_id,
         project_name=payload.project_name,
-        options={
-            "include_estimates": payload.include_estimates,
-            "include_lineitems": payload.include_lineitems,
-            "include_resources": payload.include_resources,
-            "include_activities": payload.include_activities,
-        },
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        log_json=json.dumps(log),
+        options_json=json.dumps(options),
     )
-
-    job.status = "completed"
-    job.log.append("Backup job placeholder completed (no real ZIP yet).")
-    job.updated_at = int(time.time())
-    storage.save_backup_job(job)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
 
     storage.record_request(ctx.org_id, "projects.backup", feature="projects.backup")
-    return job
+
+    return _backup_from_db(job)
 
 
-@app.get("/api/user/projects/backup/{job_id}", response_model=ProjectBackupJob)
-def get_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user)):
-    job = storage.BACKUP_JOBS.get(job_id)
-    if not job or job.org_id != ctx.org_id or job.company_id != ctx.company_id or job.user_id != ctx.user_id:
+@app.get("/api/user/projects/backup/{job_id}", response_model=BackupJobOut)
+def get_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    job = (
+        db.query(DBBackupJob)
+        .filter(
+            DBBackupJob.job_id == job_id,
+            DBBackupJob.org_id == ctx.org_id,
+            DBBackupJob.company_id == ctx.company_id,
+            DBBackupJob.user_id == ctx.user_id,
+        )
+        .first()
+    )
+    if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return job
+    return _backup_from_db(job)

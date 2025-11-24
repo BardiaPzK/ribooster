@@ -15,15 +15,21 @@ import base64
 import json
 import time
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
 
 from .models import RIBSession
 
+from pydantic import BaseModel
+
+
+
+
+
 
 @dataclass
-class AuthCfg:
+class AuthCfg(BaseModel):
     host: str
     company: str
 
@@ -44,24 +50,34 @@ class Auth:
 
     # ───────── login + headers ─────────
 
-    def login(self, user: str, pwd: str) -> RIBSession:
-        """Login, set token/role, return RIBSession."""
-        self._user, self._pwd = user, pwd
-        rsp = self.sess.post(
-            f"{self.cfg.host}/basics/api/2.0/logon",
-            json={"username": user, "password": pwd},
-            timeout=30,
-        )
-        rsp.raise_for_status()
-        self.token = rsp.text.strip('"')
-        self.role = self._role()
-        self.exp_ts = self._exp_epoch(self.token)
+    def login(self, username: str, password: str) -> RIBSession:
+        # --- your existing login code here ---
+        # Example pseudo-code:
+        url = f"{self.cfg.host}/auth/connect/token"
+        data = {
+            "username": username,
+            "password": password,
+            "client_id": "itwo",
+            "grant_type": "password",
+            "scope": "openid profile",
+        }
+        resp = requests.post(url, data=data)
+        resp.raise_for_status()
+        body = resp.json()
+        access_token = body["access_token"]
+        expires_in = int(body.get("expires_in", 3600))
+        exp_ts = int(time.time()) + expires_in
+
+        secure_client_role = body.get("secureClientRole")
+
+        # IMPORTANT: pass host, company, username
         return RIBSession(
-            access_token=self.token,
-            secure_client_role=self.role,
+            access_token=access_token,
+            exp_ts=exp_ts,
+            secure_client_role=secure_client_role,
             host=self.cfg.host,
             company_code=self.cfg.company,
-            exp_ts=int(self.exp_ts or 0),
+            username=username,
         )
 
     def hdr(self) -> Dict[str, str]:
