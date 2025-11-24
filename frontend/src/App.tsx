@@ -1,9 +1,14 @@
 // frontend/src/App.tsx
 import React from "react";
-import { AppRoutes } from "./router";
+import { BrowserRouter } from "react-router-dom";
+import AppRouter from "./router";
 
 const App: React.FC = () => {
-  return <AppRoutes />;
+  return (
+    <BrowserRouter basename="/app">
+      <AppRouter />
+    </BrowserRouter>
+  );
 };
 
 export default App;
