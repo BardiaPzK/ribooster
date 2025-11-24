@@ -1,7 +1,8 @@
 // frontend/src/components/Layout.tsx
 import React from "react";
 import Sidebar from "./Sidebar";
-import { clearAuthSession } from "../lib/auth";
+import { logout } from "../lib/auth";
+
 
 type Props = {
   title?: string;
@@ -10,7 +11,7 @@ type Props = {
 
 const Layout: React.FC<Props> = ({ title, children }) => {
   const onLogout = () => {
-    clearAuthSession();
+    logout();
     window.location.href = "/app/";
   };
 

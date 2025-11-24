@@ -2,7 +2,7 @@
 import React from "react";
 import { Outlet } from "react-router-dom";
 import AdminSidebar from "../../components/AdminSidebar";
-import { clearAuthSession } from "../../lib/auth";
+import { logout } from "../../lib/auth";
 import { MeResponse } from "../../lib/api";
 
 type Props = {
@@ -11,7 +11,7 @@ type Props = {
 
 const AdminLayout: React.FC<Props> = ({ me }) => {
   const onLogout = () => {
-    clearAuthSession();
+    logout();
     window.location.href = "/app/";
   };
 
