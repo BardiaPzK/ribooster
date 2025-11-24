@@ -14,6 +14,11 @@ Features:
 Static frontend (Vite build) is served from /app.
 """
 
+# backend/app/main.py
+"""
+FastAPI entrypoint for ribooster.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -28,8 +33,9 @@ import requests
 from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
+
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy import select
 
@@ -61,17 +67,13 @@ from .db import (
     seed_default_org_company,
 )
 
-
-
-
-# ───────────────────────── App setup ─────────────────────────
-
-@app.get("/", include_in_schema=False)
-async def root_redirect():
-    return RedirectResponse(url="/app/")
+# ---------------------------------------------------------
+# FIX: Create the FastAPI app BEFORE any routes
+# ---------------------------------------------------------
 
 app = FastAPI(title="ribooster API", version="0.4.0")
 
+# CORS
 origins = [
     "http://localhost:5173",
     "https://ribooster-webapp.azurewebsites.net",
@@ -86,18 +88,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------
+# ROUTES CAN START NOW
+# ---------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    return RedirectResponse(url="/app/")
 
 @app.on_event("startup")
 def _startup_event() -> None:
-    """Create tables and seed initial org/company."""
     init_db()
     from .db import SessionLocal
-
     db = SessionLocal()
     try:
         seed_default_org_company(db)
     finally:
         db.close()
+
 
 
 # ───────────────────────── Static Frontend ─────────────────────────
