@@ -1332,10 +1332,14 @@ class TextSqlReq(BaseModel):
     question: str
 
 @app.post("/api/user/textsql/run")
-def textsql_run(body: TextSqlReq, user=Depends(require_user), db: DB = Depends(get_db)):
+def textsql_run(
+    body: TextSqlReq,
+    user: SessionCtx = Depends(require_org_user),
+    db: SASession = Depends(get_db)
+):
     # 1. Load org/company AI key
-    company = db.get_company(user.company_id)
-    if not company.ai_api_key:
+    company = db.query(DBCompany).filter(DBCompany.company_id == user.company_id).first()
+    if not company or not company.ai_api_key:
         raise HTTPException(400, "AI not enabled for this company")
 
     # 2. Ask OpenAI for SQL
@@ -1358,7 +1362,7 @@ Return ONLY SQL, no explanation.
     except Exception as e:
         raise HTTPException(500, f"SQL generation failed: {e}")
 
-    # 3. Execute SQL against the user’s database
+    # 3. Execute SQL against user database
     conn_str = (
         f"DRIVER={{ODBC Driver 17 for SQL Server}};"
         f"SERVER={body.db_host};"
@@ -1368,6 +1372,7 @@ Return ONLY SQL, no explanation.
     )
 
     try:
+        import pyodbc
         conn = pyodbc.connect(conn_str)
         cur = conn.cursor()
         cur.execute(generated_sql)
@@ -1378,10 +1383,7 @@ Return ONLY SQL, no explanation.
         cur.close()
         conn.close()
     except Exception as e:
-        return {
-            "sql": generated_sql,
-            "error": str(e),
-        }
+        return {"sql": generated_sql, "error": str(e)}
 
     return {
         "sql": generated_sql,
