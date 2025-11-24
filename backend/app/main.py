@@ -61,6 +61,9 @@ from .db import (
     seed_default_org_company,
 )
 
+
+
+
 # ───────────────────────── App setup ─────────────────────────
 
 app = FastAPI(title="ribooster API", version="0.4.0")
@@ -1295,3 +1298,93 @@ def get_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user), db:
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return _backup_from_db(job)
+
+
+
+
+# Serve /app and /app/* correctly
+frontend_dir = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
+
+if os.path.isdir(frontend_dir):
+    app.mount("/app/assets", StaticFiles(directory=os.path.join(frontend_dir, "assets")), name="assets")
+
+    @app.get("/app/{full_path:path}")
+    async def frontend_app(full_path: str):
+        index = os.path.join(frontend_dir, "index.html")
+        return FileResponse(index)
+
+    @app.get("/")
+    async def root_redirect():
+        index = os.path.join(frontend_dir, "index.html")
+        return FileResponse(index)
+
+
+
+
+from pydantic import BaseModel
+import pyodbc
+
+class TextSqlReq(BaseModel):
+    db_host: str
+    db_name: str
+    db_user: str
+    db_password: str
+    question: str
+
+@app.post("/api/user/textsql/run")
+def textsql_run(body: TextSqlReq, user=Depends(require_user), db: DB = Depends(get_db)):
+    # 1. Load org/company AI key
+    company = db.get_company(user.company_id)
+    if not company.ai_api_key:
+        raise HTTPException(400, "AI not enabled for this company")
+
+    # 2. Ask OpenAI for SQL
+    sql_prompt = f"""
+You are an expert SQL generator. Convert the question into a SQL Server SQL query.
+The question: {body.question}
+
+Return ONLY SQL, no explanation.
+"""
+
+    from openai import OpenAI
+    client = OpenAI(api_key=company.ai_api_key)
+
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": sql_prompt}],
+        )
+        generated_sql = completion.choices[0].message.content.strip()
+    except Exception as e:
+        raise HTTPException(500, f"SQL generation failed: {e}")
+
+    # 3. Execute SQL against the user’s database
+    conn_str = (
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={body.db_host};"
+        f"DATABASE={body.db_name};"
+        f"UID={body.db_user};"
+        f"PWD={body.db_password};"
+    )
+
+    try:
+        conn = pyodbc.connect(conn_str)
+        cur = conn.cursor()
+        cur.execute(generated_sql)
+
+        columns = [c[0] for c in cur.description]
+        rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return {
+            "sql": generated_sql,
+            "error": str(e),
+        }
+
+    return {
+        "sql": generated_sql,
+        "columns": columns,
+        "rows": rows,
+    }
