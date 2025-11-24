@@ -2,7 +2,7 @@
 backend/app/rib_client.py
 
 Minimal RIB 4.0 HTTP client:
-- JWT login (basics/api/2.0/logon)
+- JWT login (basics/api/2.0/logon or auth/connect/token)
 - secureClientRolePart via checkcompanycode
 - Simple project listing
 
@@ -14,21 +14,14 @@ from __future__ import annotations
 import base64
 import json
 import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import requests
+from pydantic import BaseModel
 
 from .models import RIBSession
 
-from pydantic import BaseModel
 
-
-
-
-
-
-@dataclass
 class AuthCfg(BaseModel):
     host: str
     company: str
@@ -40,7 +33,8 @@ class Auth:
     _LEEWAY_SEC = 300
 
     def __init__(self, cfg: AuthCfg, *, client_tag: str = "ribooster"):
-        self.cfg, self.sess = cfg, requests.Session()
+        self.cfg = cfg
+        self.sess = requests.Session()
         self.sess.headers.update({"X-Client-Tag": client_tag})
         self.token: str = ""
         self.role: str = ""
@@ -51,8 +45,16 @@ class Auth:
     # ───────── login + headers ─────────
 
     def login(self, username: str, password: str) -> RIBSession:
-        # --- your existing login code here ---
-        # Example pseudo-code:
+        """
+        Login against RIB 4.0 Identity endpoint.
+
+        Expects:
+        - auth/connect/token to return access_token, expires_in and (optionally) secureClientRole.
+        - If secureClientRole is missing, falls back to checkcompanycode.
+        """
+        self._user = username
+        self._pwd = password
+
         url = f"{self.cfg.host}/auth/connect/token"
         data = {
             "username": username,
@@ -61,16 +63,33 @@ class Auth:
             "grant_type": "password",
             "scope": "openid profile",
         }
-        resp = requests.post(url, data=data)
+
+        resp = self.sess.post(url, data=data, timeout=60)
         resp.raise_for_status()
         body = resp.json()
+
         access_token = body["access_token"]
-        expires_in = int(body.get("expires_in", 3600))
-        exp_ts = int(time.time()) + expires_in
+        # prefer server expires_in, fallback to JWT exp
+        expires_in = int(body.get("expires_in", 0) or 0)
+        if expires_in > 0:
+            exp_ts = int(time.time()) + expires_in
+        else:
+            exp_ts = self._exp_epoch(access_token)
 
-        secure_client_role = body.get("secureClientRole")
+        secure_client_role = body.get("secureClientRole") or ""
 
-        # IMPORTANT: pass host, company, username
+        # If secureClientRole not present in token response, try company check
+        if not secure_client_role:
+            try:
+                secure_client_role = self._role()
+            except Exception:
+                secure_client_role = ""
+
+        # store on Auth instance for later headers
+        self.token = access_token
+        self.role = secure_client_role
+        self.exp_ts = exp_ts
+
         return RIBSession(
             access_token=access_token,
             exp_ts=exp_ts,
@@ -98,6 +117,9 @@ class Auth:
     # ───────── helpers ─────────
 
     def _role(self) -> str:
+        """
+        Fetch secureClientRolePart for current token + company.
+        """
         url = (
             f"{self.cfg.host}/basics/publicapi/company/1.0/"
             f"checkcompanycode?requestedSignedInCompanyCode={self.cfg.company}"
@@ -111,8 +133,15 @@ class Auth:
 
     @staticmethod
     def _exp_epoch(jwt: str) -> int:
+        """
+        Extract exp from JWT payload, fall back to +1h if anything fails.
+        """
         try:
-            pay = base64.urlsafe_b64decode(jwt.split(".")[1] + "===").decode()
+            payload_b64 = jwt.split(".")[1]
+            padding = (-len(payload_b64)) % 4
+            if padding:
+                payload_b64 += "=" * padding
+            pay = base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode()
             return int(json.loads(pay)["exp"])
         except Exception:
             return int(time.time()) + 3600  # 1h fallback
@@ -134,7 +163,9 @@ class ProjectApi:
     def all(self) -> List[dict]:
         sess = self.auth.sess
         hdr = self.auth.hdr()
-        out, skip, page = [], 0, 500
+        out: List[dict] = []
+        skip, page = 0, 500
+
         while True:
             r = sess.get(
                 f"{self.url}?$select=Id,ProjectName&$orderBy=ProjectName&$skip={skip}&$top={page}",
@@ -158,6 +189,6 @@ def auth_from_rib_session(sess: RIBSession) -> Auth:
     cfg = AuthCfg(host=sess.host, company=sess.company_code)
     a = Auth(cfg)
     a.token = sess.access_token
-    a.role = sess.secure_client_role
+    a.role = sess.secure_client_role or ""
     a.exp_ts = sess.exp_ts
     return a
