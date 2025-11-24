@@ -8,7 +8,7 @@ import UserDashboard from "./pages/UserDashboard";
 import ProjectBackup from "./pages/user/ProjectBackup";
 import UserTickets from "./pages/user/UserTickets";
 // if you make a Text-to-SQL page:
-import TextSqlPage from "./pages/user/TextSqlPage";
+import TextToSql from "./pages/user/TextToSql";
 
 // admin pages
 import AdminLayout from "./pages/admin/AdminLayout";
@@ -30,7 +30,7 @@ export const routes: RouteObject[] = [
       { index: true, element: <UserDashboard /> },
       { path: "projects", element: <ProjectBackup /> },
       { path: "tickets", element: <UserTickets /> },
-      { path: "text-sql", element: <TextSqlPage /> }, // new service
+      { path: "text-sql", element: <TextToSql /> },
     ],
   },
   {
