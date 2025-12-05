@@ -3,11 +3,13 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
 import { api, UserContext, TicketListItem } from "../lib/api";
+import useAuth from "../lib/auth";
 
 export default function UserDashboard() {
   const [ctx, setCtx] = useState<UserContext | null>(null);
   const [ticketStats, setTicketStats] = useState({ total: 0, open: 0 });
   const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
 
   useEffect(() => {
     const load = async () => {
@@ -28,28 +30,55 @@ export default function UserDashboard() {
     load();
   }, []);
 
-  const displayName = ctx
-    ? (ctx.org.name || "").split(" ")[0] ||
-      (ctx.company.name || "").split(" ")[0] ||
-      ""
-    : "";
-
   const firstName =
-    (ctx && (ctx.org.name || ctx.company.name || "").split(" ")[0]) ||
-    "";
+    user?.display_name?.split(" ")[0] || user?.username || ctx?.company?.name?.split(" ")[0] || "there";
+
+  const features = ctx?.company?.features || {};
+  const cards = [
+    {
+      key: "tickets",
+      to: "/user/tickets",
+      icon: "🎫",
+      title: "Support Tickets",
+      description: `${ticketStats.open} open · ${ticketStats.total} total`,
+      active: true,
+    },
+    {
+      key: "projects.backup",
+      to: "/user/backup",
+      icon: "🗂️",
+      title: "Project Backup",
+      description: "Load RIB projects and run backups",
+      active: features["projects.backup"] !== false,
+    },
+    {
+      key: "ai.helpdesk",
+      to: "/user/helpdesk",
+      icon: "🤖",
+      title: "RIB Helpdesk AI",
+      description: "Chat with the helpdesk assistant",
+      active: features["ai.helpdesk"] !== false,
+    },
+    {
+      key: "textsql",
+      to: "/user/text-sql",
+      icon: "🧠",
+      title: "Text to SQL",
+      description: "Generate SQL and run queries",
+      active: features["textsql"] !== false,
+    },
+  ];
 
   return (
     <Layout>
       <div className="p-6 space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-50">
-            {ctx ? `Welcome, ${firstName || "there"} 👋` : "Welcome 👋"}
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            {ctx
-              ? `Organization: ${ctx.org.name} · Company Code: ${ctx.company.code}`
-              : "You are logged in with your RIB account."}
-          </p>
+          <h1 className="text-2xl font-semibold text-slate-50">{`Welcome, ${firstName} 👋`}</h1>
+          {ctx && (
+            <p className="text-sm text-slate-400 mt-1">
+              Organization: {ctx.org.name} · Company Code: {ctx.company.code}
+            </p>
+          )}
         </div>
 
         {loading && (
@@ -57,67 +86,28 @@ export default function UserDashboard() {
         )}
 
         {!loading && (
-          <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
-            {/* Tickets */}
-            <Link
-              to="/user/tickets"
-              className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-950/40 transition-all flex flex-col"
-            >
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-400">
-                <span className="text-lg">🎫</span>
-                <span>Support Tickets</span>
-              </div>
-              <div className="mt-3 text-2xl font-bold text-slate-50">
-                {ticketStats.total}
-              </div>
-              <div className="mt-1 text-xs text-slate-400">
-                {ticketStats.open} open
-              </div>
-              <div className="mt-auto pt-3 text-xs text-indigo-400">
-                View and manage tickets →
-              </div>
-            </Link>
-
-            {/* Project Backup */}
-            <Link
-              to="/user/projects"
-              className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-950/40 transition-all flex flex-col"
-            >
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-400">
-                <span className="text-lg">🗂️</span>
-                <span>Project Backup</span>
-              </div>
-              <div className="mt-3 text-lg font-semibold text-slate-50">
-                Backup RIB projects
-              </div>
-              <div className="mt-1 text-xs text-slate-400">
-                Load projects from your RIB server and store small JSON
-                snapshots.
-              </div>
-              <div className="mt-auto pt-3 text-xs text-indigo-400">
-                Open backup service →
-              </div>
-            </Link>
-
-            {/* Text to SQL */}
-            <Link
-              to="/user/text-sql"
-              className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-950/40 transition-all flex flex-col"
-            >
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-400">
-                <span className="text-lg">🧠</span>
-                <span>Text to SQL</span>
-              </div>
-              <div className="mt-3 text-lg font-semibold text-slate-50">
-                Query your database
-              </div>
-              <div className="mt-1 text-xs text-slate-400">
-                Turn natural language into SQL and run it against your DB.
-              </div>
-              <div className="mt-auto pt-3 text-xs text-indigo-400">
-                Start querying →
-              </div>
-            </Link>
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+            {cards.map((card) => (
+              <Link
+                key={card.key}
+                to={card.to}
+                className={`rounded-2xl border p-4 transition-all flex flex-col ${
+                  card.active
+                    ? "border-slate-800 bg-slate-900/80 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-950/40"
+                    : "border-slate-900 bg-slate-950/60 opacity-70"
+                }`}
+              >
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-400">
+                  <span className="text-lg">{card.icon}</span>
+                  <span>{card.title}</span>
+                </div>
+                <div className="mt-3 text-sm font-semibold text-slate-50">{card.description}</div>
+                {!card.active && (
+                  <div className="mt-2 text-[11px] text-amber-400">Service not enabled for this company</div>
+                )}
+                <div className="mt-auto pt-3 text-xs text-indigo-400">Open →</div>
+              </Link>
+            ))}
           </div>
         )}
       </div>

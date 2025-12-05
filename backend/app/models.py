@@ -34,6 +34,7 @@ class Company(BaseModel):
     allowed_users: List[str] = Field(default_factory=list)
     # OpenAI API key used for helpdesk etc.
     ai_api_key: Optional[str] = None
+    features: Dict[str, bool] = Field(default_factory=dict)
 
 
 # ───────────────────────── RIB session & backend session ─────────────────────────
