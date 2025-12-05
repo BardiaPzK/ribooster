@@ -15,11 +15,25 @@ from sqlalchemy import (
     Text,
     ForeignKey,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
 
 # ---------------------- Engine & Session ----------------------
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ribooster.db")
+
+# Persist data to a small on-disk database by default so chat history,
+# organizations, companies, and user sessions survive web app restarts.
+DEFAULT_SQLITE_PATH = os.getenv("DATABASE_FILE", "/data/ribooster.db")
+DEFAULT_URL = f"sqlite:///{DEFAULT_SQLITE_PATH}"
+
+DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_URL)
+
+# Ensure the parent directory exists when using the default SQLite location.
+if DATABASE_URL.startswith("sqlite"):
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
@@ -71,6 +85,7 @@ class DBCompany(Base):
 
     allowed_users_json = Column(Text, default="[]")
     ai_api_key = Column(String)
+    features_json = Column(Text, default="{}")
 
     org = relationship("DBOrganization", back_populates="companies")
 
@@ -142,6 +157,23 @@ class DBHelpdeskMessage(Base):
     conversation = relationship("DBHelpdeskConversation", back_populates="messages")
 
 
+class DBSession(Base):
+    """Durable backend sessions so tokens survive process restarts."""
+
+    __tablename__ = "sessions"
+
+    token = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    username = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    is_admin = Column(Boolean, default=False)
+    org_id = Column(String, index=True)
+    company_id = Column(String, index=True)
+    created_at = Column(Integer, nullable=False)
+    expires_at = Column(Integer, nullable=False)
+    rib_session_json = Column(Text)
+
+
 class DBBackupJob(Base):
     __tablename__ = "backup_jobs"
 
@@ -192,6 +224,14 @@ class DBUserLog(Base):
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    # lightweight migration for features_json on companies (SQLite only)
+    if engine.dialect.name == "sqlite":
+        with engine.connect() as conn:
+            cols = conn.execute(sql_text("PRAGMA table_info(companies)")).fetchall()
+            col_names = {c[1] for c in cols}
+            if "features_json" not in col_names:
+                conn.execute(sql_text("ALTER TABLE companies ADD COLUMN features_json TEXT DEFAULT '{}'"))
+                conn.commit()
 
 
 def seed_default_org_company(db: Session) -> None:
@@ -209,6 +249,7 @@ def seed_default_org_company(db: Session) -> None:
     features = {
         "projects.backup": True,
         "ai.helpdesk": True,
+        "textsql": True,
     }
 
     org = DBOrganization(
@@ -238,6 +279,7 @@ def seed_default_org_company(db: Session) -> None:
         rib_company_code=rib_company_code,
         allowed_users_json=json.dumps([]),
         ai_api_key=None,
+        features_json=json.dumps(features),
     )
 
     db.add(org)
