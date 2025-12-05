@@ -223,6 +223,17 @@ def _session_from_token(token: str) -> SessionCtx:
     if s.expires_at and s.expires_at < now:
         storage.delete_session(token)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+
+    # Sliding refresh: extend session validity for active users.
+    # This keeps admins/org users logged in while they actively use the app,
+    # and naturally expires stale sessions after the configured TTL.
+    ttl = 8 * 3600
+    refresh_threshold = 20 * 60  # refresh if less than 20 minutes remaining
+    remaining = s.expires_at - now if s.expires_at else ttl
+    if remaining < refresh_threshold:
+        s.expires_at = now + ttl
+        storage.save_session(s)
+
     return SessionCtx(
         token=s.token,
         user_id=s.user_id,
@@ -295,8 +306,16 @@ def _company_from_db(db_company: DBCompany) -> Company:
         except Exception:
             allowed_users = _normalize_allowed_users(raw)
 
+    company_id = getattr(db_company, "company_id", None) or getattr(db_company, "id", None)
+
+    if not company_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Company record missing primary key",
+        )
+
     return Company(
-        company_id=str(db_company.company_id),   # ← FIXED
+        company_id=str(company_id),
         org_id=str(db_company.org_id),
         name=db_company.name,
         code=db_company.code,
