@@ -1,12 +1,33 @@
 // frontend/src/App.tsx
-import React from "react";
+import React, { useEffect } from "react";
 import { useRoutes, Navigate } from "react-router-dom";
 import { routes } from "./router";
-import useAuth from "./lib/auth";
+import useAuth, { logout } from "./lib/auth";
+import { api } from "./lib/api";
 
 function AppRoutes() {
   const element = useRoutes(routes);
   const { user, loading } = useAuth();
+
+  // Proactively validate any cached session (e.g., after a redeploy or on
+  // browsers that kept a stale token). If the token is no longer valid,
+  // immediately clear it so the user is sent back to /login instead of being
+  // redirected to /admin with an "Invalid session" message.
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) return;
+
+    api
+      .me()
+      .catch(() => {
+        if (cancelled) return;
+        logout();
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.token]);
 
   if (loading) {
     return (
