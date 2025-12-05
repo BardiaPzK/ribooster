@@ -34,6 +34,7 @@ export default function UserDashboard() {
     user?.display_name?.split(" ")[0] || user?.username || ctx?.company?.name?.split(" ")[0] || "there";
 
   const features = ctx?.company?.features || {};
+  const licenseActive = ctx?.org?.license?.active !== false;
   const cards = [
     {
       key: "tickets",
@@ -87,27 +88,41 @@ export default function UserDashboard() {
 
         {!loading && (
           <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-            {cards.map((card) => (
-              <Link
-                key={card.key}
-                to={card.to}
-                className={`rounded-2xl border p-4 transition-all flex flex-col ${
-                  card.active
-                    ? "border-slate-800 bg-slate-900/80 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-950/40"
-                    : "border-slate-900 bg-slate-950/60 opacity-70"
-                }`}
-              >
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-400">
-                  <span className="text-lg">{card.icon}</span>
-                  <span>{card.title}</span>
-                </div>
-                <div className="mt-3 text-sm font-semibold text-slate-50">{card.description}</div>
-                {!card.active && (
-                  <div className="mt-2 text-[11px] text-amber-400">Service not enabled for this company</div>
-                )}
-                <div className="mt-auto pt-3 text-xs text-indigo-400">Open →</div>
-              </Link>
-            ))}
+            {cards.map((card) => {
+              const featureActive = card.active !== false;
+              const allowed = card.key === "tickets" ? true : featureActive && licenseActive;
+              const note =
+                card.key === "tickets"
+                  ? null
+                  : !featureActive
+                  ? "This service is an add-on. Please contact support."
+                  : !licenseActive
+                  ? "Company code license is inactive. Please contact support."
+                  : null;
+
+              return (
+                <Link
+                  key={card.key}
+                  to={card.to}
+                  onClick={(e) => {
+                    if (!allowed) e.preventDefault();
+                  }}
+                  className={`rounded-2xl border p-4 transition-all flex flex-col ${
+                    allowed
+                      ? "border-slate-800 bg-slate-900/80 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-950/40"
+                      : "border-slate-900 bg-slate-950/60 opacity-70 cursor-not-allowed"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-400">
+                    <span className="text-lg">{card.icon}</span>
+                    <span>{card.title}</span>
+                  </div>
+                  <div className="mt-3 text-sm font-semibold text-slate-50">{card.description}</div>
+                  {note && <div className="mt-2 text-[11px] text-amber-400">{note}</div>}
+                  <div className="mt-auto pt-3 text-xs text-indigo-400">Open →</div>
+                </Link>
+              );
+            })}
           </div>
         )}
       </div>

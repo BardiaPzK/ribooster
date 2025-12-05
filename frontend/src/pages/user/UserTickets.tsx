@@ -67,9 +67,32 @@ export default function UserTickets() {
     }
   }
 
+  // Background refresh for the selected ticket so new admin replies appear without manual reloads
+  async function refreshSelectedTicket() {
+    if (!selectedId) return;
+    try {
+      const [full, list] = await Promise.all([
+        api.user.getTicket(selectedId),
+        api.user.listTickets(),
+      ]);
+      setSelectedTicket(full);
+      setTickets(list);
+    } catch (e: any) {
+      console.error(e);
+    }
+  }
+
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const handle = setInterval(() => {
+      refreshSelectedTicket();
+    }, 8000);
+    return () => clearInterval(handle);
+  }, [selectedId]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
