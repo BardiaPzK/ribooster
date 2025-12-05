@@ -322,13 +322,14 @@ def _company_from_db(db_company: DBCompany) -> Company:
 
     features: Dict[str, bool] = {}
     raw_features = getattr(db_company, "features_json", None)
-    if raw_features:
+    if isinstance(raw_features, str) and raw_features.strip():
         try:
             parsed = json.loads(raw_features)
-            if isinstance(parsed, dict):
-                features = parsed
         except Exception:
-            features = {}
+            parsed = {}
+
+        if isinstance(parsed, dict):
+            features = parsed
 
     return Company(
         company_id=str(company_id),
