@@ -505,9 +505,6 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
             ) from exc
 
         if "scheduled environment access notice" in lowered:
-            ) from e
-
-        if "Scheduled Environment Access Notice" in text:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
@@ -515,7 +512,7 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
                     "not available outside its scheduled access window. "
                     "Please try again later or contact your RIB implementation manager."
                 ),
-            )
+            ) from exc
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

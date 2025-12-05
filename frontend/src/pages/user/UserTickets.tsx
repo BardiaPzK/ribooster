@@ -27,14 +27,26 @@ export default function UserTickets() {
       setError(null);
       const items = await api.user.listTickets();
       setTickets(items);
-      if (!listOnly) {
-        const firstId = items[0]?.ticket_id;
-        if (firstId) {
-          await loadTicket(firstId);
+      const hasTickets = items.length > 0;
+      const keepSelected = selectedId && items.some((i) => i.ticket_id === selectedId);
+
+      if (listOnly) {
+        const idToRefresh = keepSelected ? selectedId : items[0]?.ticket_id;
+        if (idToRefresh) {
+          await loadTicket(idToRefresh);
         } else {
           setSelectedId(null);
           setSelectedTicket(null);
         }
+        return;
+      }
+
+      const firstId = hasTickets ? items[0].ticket_id : null;
+      if (firstId) {
+        await loadTicket(firstId);
+      } else {
+        setSelectedId(null);
+        setSelectedTicket(null);
       }
     } catch (e: any) {
       console.error(e);
