@@ -51,6 +51,7 @@ const AdminOrgs: React.FC = () => {
   const [newRibCompany, setNewRibCompany] = useState("999");
   const [newAllowedUsersStr, setNewAllowedUsersStr] = useState("");
   const [newAiKey, setNewAiKey] = useState("");
+  const [newFeatures, setNewFeatures] = useState<Record<string, boolean>>({ ...defaultFeatures });
 
   const load = () => {
     setLoading(true);
@@ -148,6 +149,11 @@ const AdminOrgs: React.FC = () => {
     setEditAiKey(company.ai_api_key || "");
   }, [selectedOrg, selectedCompany]);
 
+  // Reset the new company defaults when switching organizations
+  useEffect(() => {
+    setNewFeatures({ ...defaultFeatures });
+  }, [selectedOrgId]);
+
   const saveSelected = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedOrg || !selectedCompany) return;
@@ -197,13 +203,14 @@ const AdminOrgs: React.FC = () => {
           .map((s) => s.trim())
           .filter(Boolean),
         ai_api_key: newAiKey.trim() || undefined,
-        features: Object.keys(editFeatures).length ? editFeatures : defaultFeatures,
+        features: Object.keys(newFeatures).length ? newFeatures : defaultFeatures,
       });
       setNewCompanyCode("");
       setNewBaseUrl("");
       setNewRibCompany("999");
       setNewAllowedUsersStr("");
       setNewAiKey("");
+      setNewFeatures({ ...defaultFeatures });
       setSelectedCompanyId(created.company_id);
       load();
     } catch (e: any) {
@@ -340,6 +347,26 @@ const AdminOrgs: React.FC = () => {
             <div className="font-medium text-slate-200 mb-1">Edit organization</div>
             {selectedOrg && selectedCompany ? (
               <form className="space-y-2" onSubmit={saveSelected}>
+                <div className="space-y-1">
+                  <div className="text-[11px] font-medium text-slate-300">Company codes</div>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedOrg.companies.map((c) => (
+                      <button
+                        key={c.company_id}
+                        type="button"
+                        onClick={() => setSelectedCompanyId(c.company_id)}
+                        className={`rounded-full border px-3 py-1 text-[11px] transition ${
+                          selectedCompanyId === c.company_id
+                            ? "border-indigo-500 bg-indigo-500/10 text-indigo-200"
+                            : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500"
+                        }`}
+                      >
+                        {c.code}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-[11px] mb-0.5 text-slate-400">Org name</label>
                   <input
@@ -516,6 +543,29 @@ const AdminOrgs: React.FC = () => {
                 value={newAiKey}
                 onChange={(e) => setNewAiKey(e.target.value)}
               />
+              <div className="space-y-1">
+                <div className="text-[11px] font-medium text-slate-300">Services</div>
+                {serviceOptions.map((svc) => (
+                  <label key={svc.key} className="flex items-center justify-between text-[11px] text-slate-300">
+                    <span>{svc.label}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setNewFeatures((prev) => ({ ...prev, [svc.key]: !prev[svc.key] }))
+                      }
+                      className={`relative inline-flex h-5 w-10 items-center rounded-full transition ${
+                        newFeatures[svc.key] !== false ? "bg-indigo-500" : "bg-slate-700"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                          newFeatures[svc.key] !== false ? "translate-x-5" : "translate-x-1"
+                        }`}
+                      />
+                    </button>
+                  </label>
+                ))}
+              </div>
               <button
                 type="submit"
                 className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs px-3 py-1.5"

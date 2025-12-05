@@ -278,12 +278,16 @@ def require_org_user(ctx: SessionCtx = Depends(require_session)) -> SessionCtx:
 # ───────────────────────── DB ↔ Pydantic helpers ─────────────────────────
 
 def _org_from_db(o: DBOrganization) -> Organization:
-    feats: Dict[str, bool] = {}
+    # Always start from the default feature set so missing keys stay enabled
+    # unless they are explicitly disabled at the org level. This keeps per-company
+    # feature toggles authoritative while preventing accidental org-level blocks
+    # when the JSON column is empty.
+    feats: Dict[str, bool] = dict(DEFAULT_SERVICE_FLAGS)
     if o.features_json:
         try:
-            feats = json.loads(o.features_json)
+            feats.update(json.loads(o.features_json))
         except Exception:
-            feats = {}
+            feats = dict(DEFAULT_SERVICE_FLAGS)
     lic = License(
         plan=o.license_plan or "monthly",
         active=bool(o.license_active),
@@ -409,12 +413,17 @@ def _ensure_feature(ctx: SessionCtx, feature_key: str, db: SASession) -> None:
     org = db.query(DBOrganization).filter(DBOrganization.org_id == ctx.org_id).first()
     if not org:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org not found")
-    feats: Dict[str, bool] = {}
+    if org.license_active is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Company code license inactive",
+        )
+    feats: Dict[str, bool] = dict(DEFAULT_SERVICE_FLAGS)
     if org.features_json:
         try:
-            feats = json.loads(org.features_json)
+            feats.update(json.loads(org.features_json))
         except Exception:
-            feats = {}
+            feats = dict(DEFAULT_SERVICE_FLAGS)
     if not feats.get(feature_key, False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -505,9 +514,6 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
             ) from exc
 
         if "scheduled environment access notice" in lowered:
-            ) from e
-
-        if "Scheduled Environment Access Notice" in text:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
@@ -515,7 +521,7 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
                     "not available outside its scheduled access window. "
                     "Please try again later or contact your RIB implementation manager."
                 ),
-            )
+            ) from exc
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -660,20 +666,17 @@ class AdminCreateCompanyRequest(BaseModel):
 
 @app.get("/api/admin/orgs", response_model=List[OrgListItem])
 def admin_list_orgs(ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
-    rows = (
-        db.query(DBOrganization, DBCompany)
-        .join(DBCompany, DBCompany.org_id == DBOrganization.org_id)
-        .all()
-    )
-    grouped: Dict[str, List[DBCompany]] = {}
-    org_map: Dict[str, DBOrganization] = {}
-    for o, c in rows:
-        org_map[o.org_id] = o
-        grouped.setdefault(o.org_id, []).append(c)
-
     out: List[OrgListItem] = []
-    for org_id, companies in grouped.items():
-        org = _org_from_db(org_map[org_id])
+    org_rows = db.query(DBOrganization).all()
+
+    for org_row in org_rows:
+        companies = (
+            db.query(DBCompany)
+            .filter(DBCompany.org_id == org_row.org_id)
+            .order_by(DBCompany.code)
+            .all()
+        )
+        org = _org_from_db(org_row)
         comps = [_company_from_db(c) for c in companies]
         metrics = storage.METRICS.get(org.org_id)
         out.append(
@@ -1144,6 +1147,7 @@ def admin_reply_ticket(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
     now = int(time.time())
+    t.updated_at = now
     if payload.text:
         m = DBTicketMessage(
             message_id=f"m_{uuid.uuid4().hex[:10]}",

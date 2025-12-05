@@ -27,14 +27,26 @@ export default function UserTickets() {
       setError(null);
       const items = await api.user.listTickets();
       setTickets(items);
-      if (!listOnly) {
-        const firstId = items[0]?.ticket_id;
-        if (firstId) {
-          await loadTicket(firstId);
+      const hasTickets = items.length > 0;
+      const keepSelected = selectedId && items.some((i) => i.ticket_id === selectedId);
+
+      if (listOnly) {
+        const idToRefresh = keepSelected ? selectedId : items[0]?.ticket_id;
+        if (idToRefresh) {
+          await loadTicket(idToRefresh);
         } else {
           setSelectedId(null);
           setSelectedTicket(null);
         }
+        return;
+      }
+
+      const firstId = hasTickets ? items[0].ticket_id : null;
+      if (firstId) {
+        await loadTicket(firstId);
+      } else {
+        setSelectedId(null);
+        setSelectedTicket(null);
       }
     } catch (e: any) {
       console.error(e);
@@ -55,9 +67,32 @@ export default function UserTickets() {
     }
   }
 
+  // Background refresh for the selected ticket so new admin replies appear without manual reloads
+  async function refreshSelectedTicket() {
+    if (!selectedId) return;
+    try {
+      const [full, list] = await Promise.all([
+        api.user.getTicket(selectedId),
+        api.user.listTickets(),
+      ]);
+      setSelectedTicket(full);
+      setTickets(list);
+    } catch (e: any) {
+      console.error(e);
+    }
+  }
+
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const handle = setInterval(() => {
+      refreshSelectedTicket();
+    }, 8000);
+    return () => clearInterval(handle);
+  }, [selectedId]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
