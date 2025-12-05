@@ -1,11 +1,11 @@
 // frontend/src/lib/api.ts
-import { getToken } from "./auth";
+import { getAuthToken } from "./auth";
 
 const API_BASE = "/api";
 
 // Generic request helper with auth header
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
+  const token = getAuthToken();
   const headers: HeadersInit = {
     "Content-Type": "application/json",
     ...(options.headers || {}),

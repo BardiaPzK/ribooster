@@ -46,7 +46,10 @@ function RequireUser({ children }: { children: JSX.Element }) {
 // Router definition
 // ─────────────────────────────────────────────
 
-export const router = createBrowserRouter([
+// Define the routes separately so they can be consumed by both
+// createBrowserRouter (for RouterProvider) and useRoutes (for
+// existing App.tsx routing logic).
+export const routes = [
   {
     path: "/",
     element: <Navigate to="/login" replace />,
@@ -129,6 +132,8 @@ export const router = createBrowserRouter([
     path: "*",
     element: <Navigate to="/login" replace />,
   },
-]);
+];
+
+export const router = createBrowserRouter(routes);
 
 export default router;
