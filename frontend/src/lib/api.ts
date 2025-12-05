@@ -92,6 +92,7 @@ export interface Company {
   rib_company_code: string;
   allowed_users: string[];
   ai_api_key?: string | null;
+   features: Record<string, boolean>;
 }
 
 export interface MetricCounters {
@@ -102,7 +103,8 @@ export interface MetricCounters {
 
 export interface OrgListItem {
   org: Organization;
-  company: Company;
+  company?: Company;
+  companies: Company[];
   metrics?: MetricCounters | null;
 }
 
@@ -174,6 +176,12 @@ export const api = {
         body: JSON.stringify(payload),
       });
     },
+    createCompany(org_id: string, payload: any) {
+      return request<Company>(`/admin/orgs/${org_id}/companies`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
     listTickets() {
       return request<Ticket[]>("/admin/tickets");
     },
@@ -203,6 +211,23 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ text }),
       });
+    },
+    textsqlRun(payload: any) {
+      return request(`/user/textsql/run`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    helpdesk: {
+      listConversations() {
+        return request<any[]>("/user/helpdesk/conversations");
+      },
+      chat(payload: { conversation_id?: string; text: string }) {
+        return request<any>("/user/helpdesk/chat", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      },
     },
   },
 

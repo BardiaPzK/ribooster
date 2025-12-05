@@ -159,6 +159,12 @@ ADMIN_USERS = {
     "admin": "admin",  # username: password
 }
 
+DEFAULT_SERVICE_FLAGS = {
+    "projects.backup": True,
+    "ai.helpdesk": True,
+    "textsql": True,
+}
+
 
 class LoginRequest(BaseModel):
     company_code: str
@@ -323,6 +329,7 @@ def _company_from_db(db_company: DBCompany) -> Company:
         rib_company_code=db_company.rib_company_code,
         allowed_users=allowed_users,
         ai_api_key=db_company.ai_api_key,
+        features=features,
     )
 
 
@@ -372,6 +379,19 @@ def _get_org_company_by_code(db: SASession, code: str):
 def _ensure_feature(ctx: SessionCtx, feature_key: str, db: SASession) -> None:
     if not ctx.org_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org missing")
+    company_features: Dict[str, bool] = {}
+    if ctx.company_id:
+        comp = db.query(DBCompany).filter(DBCompany.company_id == ctx.company_id).first()
+        if comp and getattr(comp, "features_json", None):
+            try:
+                company_features = json.loads(comp.features_json) or {}
+            except Exception:
+                company_features = {}
+        if company_features and not company_features.get(feature_key, False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Feature not enabled for company",
+            )
     org = db.query(DBOrganization).filter(DBOrganization.org_id == ctx.org_id).first()
     if not org:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org not found")
@@ -461,6 +481,13 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
             text = e.response.text or ""
         except Exception:
             text = ""
+
+        lowered = text.lower()
+        if "invalid_grant" in lowered or "invalid username" in lowered or "invalid password" in lowered:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="RIB login failed: Invalid username/password. Please try again.",
+            ) from e
 
         if "Scheduled Environment Access Notice" in text:
             raise HTTPException(
@@ -561,7 +588,8 @@ def user_context(ctx: SessionCtx = Depends(require_org_user), db: SASession = De
 
 class OrgListItem(BaseModel):
     org: Organization
-    company: Company
+    company: Optional[Company] = None
+    companies: List[Company] = Field(default_factory=list)
     metrics: Optional[MetricCounters] = None
 
 
@@ -595,6 +623,16 @@ class AdminUpdateCompanyRequest(BaseModel):
     company_code: Optional[str] = None
     allowed_users: Optional[List[str]] = None
     ai_api_key: Optional[str] = None
+    features: Optional[Dict[str, bool]] = None
+
+
+class AdminCreateCompanyRequest(BaseModel):
+    base_url: str
+    rib_company_code: str
+    company_code: str
+    allowed_users: List[str] = Field(default_factory=list)
+    ai_api_key: Optional[str] = None
+    features: Dict[str, bool] = Field(default_factory=lambda: dict(DEFAULT_SERVICE_FLAGS))
 
 
 @app.get("/api/admin/orgs", response_model=List[OrgListItem])
@@ -604,12 +642,25 @@ def admin_list_orgs(ctx: SessionCtx = Depends(require_admin), db: SASession = De
         .join(DBCompany, DBCompany.org_id == DBOrganization.org_id)
         .all()
     )
-    out: List[OrgListItem] = []
+    grouped: Dict[str, List[DBCompany]] = {}
+    org_map: Dict[str, DBOrganization] = {}
     for o, c in rows:
-        org = _org_from_db(o)
-        company = _company_from_db(c)
+        org_map[o.org_id] = o
+        grouped.setdefault(o.org_id, []).append(c)
+
+    out: List[OrgListItem] = []
+    for org_id, companies in grouped.items():
+        org = _org_from_db(org_map[org_id])
+        comps = [_company_from_db(c) for c in companies]
         metrics = storage.METRICS.get(org.org_id)
-        out.append(OrgListItem(org=org, company=company, metrics=metrics))
+        out.append(
+            OrgListItem(
+                org=org,
+                company=comps[0] if comps else None,
+                companies=comps,
+                metrics=metrics,
+            )
+        )
     return out
 
 
@@ -626,10 +677,7 @@ def admin_create_org(
     lic_end = payload.current_period_end or (now + 365 * 24 * 3600)
 
     # default features
-    features = {
-        "projects.backup": True,
-        "ai.helpdesk": True,
-    }
+    features = dict(DEFAULT_SERVICE_FLAGS)
 
     o = DBOrganization(
         org_id=org_id,
@@ -653,6 +701,7 @@ def admin_create_org(
         rib_company_code=payload.rib_company_code,
         allowed_users_json=json.dumps(allowed),
         ai_api_key=None,
+        features_json=json.dumps(features),
     )
 
     db.add(o)
@@ -664,7 +713,36 @@ def admin_create_org(
     org = _org_from_db(o)
     company = _company_from_db(c)
     metrics = storage.METRICS.get(org.org_id)
-    return OrgListItem(org=org, company=company, metrics=metrics)
+    return OrgListItem(org=org, company=company, companies=[company], metrics=metrics)
+
+
+@app.post("/api/admin/orgs/{org_id}/companies", response_model=Company)
+def admin_create_company(
+    org_id: str,
+    payload: AdminCreateCompanyRequest,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    org = db.query(DBOrganization).filter(DBOrganization.org_id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
+
+    company_id = f"comp_{uuid.uuid4().hex[:10]}"
+    c = DBCompany(
+        company_id=company_id,
+        org_id=org_id,
+        name=payload.company_code,
+        code=payload.company_code,
+        base_url=payload.base_url,
+        rib_company_code=payload.rib_company_code,
+        allowed_users_json=json.dumps(payload.allowed_users or []),
+        ai_api_key=payload.ai_api_key,
+        features_json=json.dumps(payload.features or DEFAULT_SERVICE_FLAGS),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return _company_from_db(c)
 
 
 @app.put("/api/admin/orgs/{org_id}", response_model=Organization)
@@ -729,6 +807,15 @@ def admin_update_company(
         c.allowed_users_json = json.dumps(payload.allowed_users)
     if payload.ai_api_key is not None:
         c.ai_api_key = payload.ai_api_key
+    if payload.features is not None:
+        existing: Dict[str, bool] = {}
+        if getattr(c, "features_json", None):
+            try:
+                existing = json.loads(c.features_json)
+            except Exception:
+                existing = {}
+        existing.update(payload.features)
+        c.features_json = json.dumps(existing)
 
     db.commit()
     db.refresh(c)
@@ -1405,6 +1492,7 @@ def textsql_run(
     user: SessionCtx = Depends(require_org_user),
     db: SASession = Depends(get_db)
 ):
+    _ensure_feature(user, "textsql", db)
     # 1. Load org/company AI key
     company = db.query(DBCompany).filter(DBCompany.company_id == user.company_id).first()
     if not company or not company.ai_api_key:

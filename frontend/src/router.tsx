@@ -17,6 +17,7 @@ import AdminSettings from "./pages/admin/AdminSettings";
 import ProjectBackup from "./pages/user/ProjectBackup";
 import UserTickets from "./pages/user/UserTickets";
 import TextToSql from "./pages/user/TextToSql";
+import Helpdesk from "./pages/user/Helpdesk";
 
 // ─────────────────────────────────────────────
 // Wrapper components for auth
@@ -99,7 +100,23 @@ export const routes = [
     path: "/user",
     children: [
       {
+        index: true,
+        element: (
+          <RequireUser>
+            <UserDashboard />
+          </RequireUser>
+        ),
+      },
+      {
         path: "backup",
+        element: (
+          <RequireUser>
+            <ProjectBackup />
+          </RequireUser>
+        ),
+      },
+      {
+        path: "projects",
         element: (
           <RequireUser>
             <ProjectBackup />
@@ -119,6 +136,22 @@ export const routes = [
         element: (
           <RequireUser>
             <TextToSql />
+          </RequireUser>
+        ),
+      },
+      {
+        path: "text-sql",
+        element: (
+          <RequireUser>
+            <TextToSql />
+          </RequireUser>
+        ),
+      },
+      {
+        path: "helpdesk",
+        element: (
+          <RequireUser>
+            <Helpdesk />
           </RequireUser>
         ),
       },
