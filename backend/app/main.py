@@ -321,9 +321,12 @@ def _company_from_db(db_company: DBCompany) -> Company:
         )
 
     features: Dict[str, bool] = {}
-    if getattr(db_company, "features_json", None):
+    raw_features = getattr(db_company, "features_json", None)
+    if raw_features:
         try:
-            features = json.loads(db_company.features_json) or {}
+            parsed = json.loads(raw_features)
+            if isinstance(parsed, dict):
+                features = parsed
         except Exception:
             features = {}
 
