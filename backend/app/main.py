@@ -485,22 +485,26 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
 
 
 
-    # RIB login
-    auth = Auth(AuthCfg(host=company.base_url, company=company.rib_company_code))
-    try:
-        rib_sess = auth.login(username, password)
-    except requests.HTTPError as e:
+    def _rib_login_error(exc: Exception) -> None:
+        """Map any RIB auth failure to a concise, professional message."""
+
         text = ""
-        try:
-            text = e.response.text or ""
-        except Exception:
-            text = ""
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            try:
+                text = exc.response.text or ""
+            except Exception:
+                text = ""
+        else:
+            text = str(exc) or ""
 
         lowered = text.lower()
         if "invalid_grant" in lowered or "invalid username" in lowered or "invalid password" in lowered:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="RIB login failed: Invalid username/password. Please try again.",
+            ) from exc
+
+        if "scheduled environment access notice" in lowered:
             ) from e
 
         if "Scheduled Environment Access Notice" in text:
@@ -515,13 +519,18 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"RIB login failed: {text or str(e)}",
-        ) from e
+            detail=(
+                "RIB login failed: We couldn't sign you in to the RIB server right now. "
+                "Please verify your credentials and try again, or contact support if the issue persists."
+            ),
+        ) from exc
+
+    # RIB login
+    auth = Auth(AuthCfg(host=company.base_url, company=company.rib_company_code))
+    try:
+        rib_sess = auth.login(username, password)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"RIB login failed: {str(e)}",
-        ) from e
+        _rib_login_error(e)
 
     display_name = _display_from_jwt(rib_sess.access_token, username)
 
