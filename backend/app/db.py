@@ -142,6 +142,23 @@ class DBHelpdeskMessage(Base):
     conversation = relationship("DBHelpdeskConversation", back_populates="messages")
 
 
+class DBSession(Base):
+    """Durable backend sessions so tokens survive process restarts."""
+
+    __tablename__ = "sessions"
+
+    token = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    username = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    is_admin = Column(Boolean, default=False)
+    org_id = Column(String, index=True)
+    company_id = Column(String, index=True)
+    created_at = Column(Integer, nullable=False)
+    expires_at = Column(Integer, nullable=False)
+    rib_session_json = Column(Text)
+
+
 class DBBackupJob(Base):
     __tablename__ = "backup_jobs"
 
