@@ -6,6 +6,7 @@ export type AuthSession = {
   is_admin: boolean;
   username: string;
   display_name: string;
+  user_id?: string | null;
   org_id?: string | null;
   org_name?: string | null;
   company_id?: string | null;
@@ -133,18 +134,52 @@ export function useAuth() {
     if (typeof window === "undefined") return null;
     return getSession();
   });
+  const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    const validate = async () => {
+      const current = getSession();
+      // Nothing cached — ready immediately
+      if (!current) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/auth/me", {
+          headers: { Authorization: `Bearer ${current.token}` },
+        });
+        if (!res.ok) {
+          throw new Error("Session invalid");
+        }
+
+        const data = await res.json();
+        const refreshed: AuthSession = {
+          ...current,
+          user_id: data.user_id,
+          org_id: data.org_id ?? current.org_id,
+          company_id: data.company_id ?? current.company_id,
+        } as AuthSession;
+        setSession(refreshed);
+      } catch {
+        // Token is stale or rejected; clear it so routing sends user to login
+        logout();
+      } finally {
+        setLoading(false);
+      }
+    };
+
     const unsub = subscribe((sess) => setState(sess));
-    setState(getSession());
+    validate();
     return unsub;
   }, []);
 
   return {
     user: session,
     token: session?.token ?? null,
-    loading: false,
+    loading,
   };
 }
 

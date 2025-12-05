@@ -14,7 +14,8 @@ const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin }) => {
   const userLinks = [
     { to: "/user", label: "Overview" },
     { to: "/user/tickets", label: "Support Tickets" },
-    { to: "/user/projects", label: "Project Backup" },
+    { to: "/user/backup", label: "Project Backup" },
+    { to: "/user/helpdesk", label: "RIB Helpdesk" },
     { to: "/user/text-sql", label: "Text to SQL" },
   ];
 
