@@ -320,6 +320,20 @@ def _company_from_db(db_company: DBCompany) -> Company:
             detail="Company record missing primary key",
         )
 
+    features: Dict[str, bool] = dict(DEFAULT_SERVICE_FLAGS)
+    raw_features = getattr(db_company, "features_json", None)
+
+    if isinstance(raw_features, dict):
+        features = {**features, **raw_features}
+    elif isinstance(raw_features, str) and raw_features.strip():
+        try:
+            parsed = json.loads(raw_features)
+        except Exception:
+            parsed = {}
+
+        if isinstance(parsed, dict):
+            features = {**features, **parsed}
+
     return Company(
         company_id=str(company_id),
         org_id=str(db_company.org_id),
