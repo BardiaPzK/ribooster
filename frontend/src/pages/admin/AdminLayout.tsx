@@ -2,14 +2,20 @@
 import React from "react";
 import { Outlet } from "react-router-dom";
 import AdminSidebar from "../../components/AdminSidebar";
-import { logout } from "../../lib/auth";
-import { MeResponse } from "../../lib/api";
+import useAuth, { logout } from "../../lib/auth";
 
-type Props = {
-  me: MeResponse;
-};
+const AdminLayout: React.FC = () => {
+  const { user, loading } = useAuth();
 
-const AdminLayout: React.FC<Props> = ({ me }) => {
+  // Wait until auth is resolved so we don't render with an undefined user.
+  if (loading || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-slate-500">
+        Loading admin...
+      </div>
+    );
+  }
+
   const onLogout = () => {
     logout();
     window.location.href = "/app/";
@@ -21,7 +27,7 @@ const AdminLayout: React.FC<Props> = ({ me }) => {
       <div className="flex-1 flex flex-col">
         <header className="h-14 border-b border-slate-800 flex items-center justify-between px-4 bg-slate-950/80 backdrop-blur">
           <div className="text-sm font-medium text-slate-200">
-            Admin • {me.display_name} ({me.username})
+            Admin - {user.display_name} ({user.username})
           </div>
           <button
             onClick={onLogout}
