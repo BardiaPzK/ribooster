@@ -142,21 +142,31 @@ class ProjectApi:
         self.url = f"{auth.cfg.host}/project/publicapi/project/3.0"
 
     def all(self) -> List[dict]:
+        """
+        Fetch all projects (paged) with stable ordering and minimal fields.
+        Mirrors the logic verified in local testing to avoid server errors.
+        """
         sess = self.auth.sess
         hdr = self.auth.hdr()
 
-        out = []
+        out: List[dict] = []
         skip, page = 0, 500
 
         while True:
-            rsp = sess.get(
-                f"{self.url}?$skip={skip}&$top={page}",
-                headers=hdr,
-                timeout=30,
+            url = (
+                f"{self.url}"
+                f"?$select=Id,ProjectName"
+                f"&$orderBy=ProjectName"
+                f"&$skip={skip}&$top={page}"
             )
+            rsp = sess.get(url, headers=hdr, timeout=60)
             rsp.raise_for_status()
+
             data = rsp.json()
-            chunk = data.get("value", [])
+            chunk = data.get("value", data) if isinstance(data, dict) else data
+            if not isinstance(chunk, list):
+                chunk = []
+
             out.extend(chunk)
 
             if len(chunk) < page:
