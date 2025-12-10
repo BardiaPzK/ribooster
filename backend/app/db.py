@@ -232,6 +232,7 @@ class DBPayment(Base):
     period_start = Column(Integer)
     period_end = Column(Integer)
     external_id = Column(String)  # e.g. Stripe invoice id
+    added_by = Column(String)
 
 
 class DBUserLog(Base):
@@ -318,7 +319,7 @@ def _ensure_company_columns() -> None:
 
 
 def _ensure_payment_columns() -> None:
-    """Ensure payments have company_id."""
+    """Ensure payments have company_id and added_by."""
     dialect = engine.dialect.name
     with engine.connect() as conn:
         if dialect == "sqlite":
@@ -330,9 +331,20 @@ def _ensure_payment_columns() -> None:
                     conn.commit()
                 except Exception:
                     pass
+            if "added_by" not in col_names:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payments ADD COLUMN added_by TEXT"))
+                    conn.commit()
+                except Exception:
+                    pass
         else:
             try:
                 conn.execute(sql_text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS company_id TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(sql_text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS added_by TEXT"))
                 conn.commit()
             except Exception:
                 pass

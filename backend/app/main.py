@@ -391,6 +391,7 @@ def _payment_from_db(p: DBPayment) -> "PaymentOut":
         period_start=p.period_start,
         period_end=p.period_end,
         external_id=p.external_id,
+        added_by=getattr(p, "added_by", None),
     )
 
 
@@ -757,6 +758,7 @@ class PaymentOut(BaseModel):
     period_start: Optional[int] = None
     period_end: Optional[int] = None
     external_id: Optional[str] = None
+    added_by: Optional[str] = None
 
 
 @app.get("/api/admin/orgs", response_model=List[OrgListItem])
@@ -991,6 +993,7 @@ def admin_create_payment(
     comp.license_plan = plan
     comp.license_active = True
     comp.license_current_period_end = end
+    pay.added_by = ctx.username
 
     db.add(pay)
     db.commit()

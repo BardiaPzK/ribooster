@@ -55,7 +55,7 @@ const AdminOrgs: React.FC = () => {
   // payments
   const [payments, setPayments] = useState<Payment[]>([]);
   const [payDate, setPayDate] = useState("");
-  const [payAmount, setPayAmount] = useState<number>(0);
+  const [payAmount, setPayAmount] = useState<string>("");
   const [payDesc, setPayDesc] = useState("");
 
   // new company
@@ -242,13 +242,13 @@ const AdminOrgs: React.FC = () => {
       const midnight = payDate ? new Date(payDate + "T00:00:00") : new Date();
       await api.admin.addPayment(selectedCompany.company_id, {
         payment_date: Math.floor(midnight.getTime() / 1000),
-        amount_cents: payAmount || 0,
+        amount_cents: Math.round((parseFloat(payAmount || "0") || 0) * 100),
         description: payDesc || undefined,
       });
       await loadPayments(selectedCompany.company_id);
       load();
       setPayDesc("");
-      setPayAmount(0);
+      setPayAmount("");
     } catch (e: any) {
       setError(e?.message || "Failed to add payment");
     }
@@ -640,10 +640,11 @@ const AdminOrgs: React.FC = () => {
                         />
                         <input
                           type="number"
+                          step="0.01"
                           className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                          placeholder="Amount cents"
+                          placeholder="Amount in EUR (e.g., 88.99)"
                           value={payAmount}
-                          onChange={(e) => setPayAmount(Number(e.target.value))}
+                          onChange={(e) => setPayAmount(e.target.value)}
                         />
                         <input
                           className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
@@ -670,8 +671,8 @@ const AdminOrgs: React.FC = () => {
                               <span>{new Date((p.period_start || p.created_at) * 1000).toLocaleDateString()}</span>
                             </div>
                             <div className="text-slate-400">
-                              Period end:{" "}
-                              {p.period_end ? new Date(p.period_end * 1000).toLocaleDateString() : "n/a"} •{" "}
+                              Period end: {p.period_end ? new Date(p.period_end * 1000).toLocaleDateString() : "n/a"} •{" "}
+                              Added: {new Date(p.created_at * 1000).toLocaleDateString()} • By: {p.added_by || "admin"} •{" "}
                               {p.description || "no desc"}
                             </div>
                           </div>
