@@ -84,6 +84,9 @@ class DBCompany(Base):
     rib_company_code = Column(String, nullable=False)
 
     allowed_users_json = Column(Text, default="[]")
+    license_plan = Column(String, default="trial")  # trial | monthly | yearly
+    license_active = Column(Boolean, default=True)
+    license_current_period_end = Column(Integer)
     ai_api_key = Column(String)
     features_json = Column(Text, default="{}")
 
@@ -221,6 +224,7 @@ class DBPayment(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     org_id = Column(String, ForeignKey("organizations.org_id"), nullable=False, index=True)
+    company_id = Column(String, ForeignKey("companies.company_id"), nullable=True, index=True)
     created_at = Column(Integer, nullable=False)
     currency = Column(String, default="EUR")
     amount_cents = Column(Integer, nullable=False)
@@ -248,15 +252,87 @@ class DBUserLog(Base):
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # lightweight migration for features_json on companies (SQLite only)
-    if engine.dialect.name == "sqlite":
-        with engine.connect() as conn:
-            cols = conn.execute(sql_text("PRAGMA table_info(companies)")).fetchall()
-            col_names = {c[1] for c in cols}
-            if "features_json" not in col_names:
-                conn.execute(sql_text("ALTER TABLE companies ADD COLUMN features_json TEXT DEFAULT '{}'"))
-                conn.commit()
+    _ensure_company_columns()
+    _ensure_payment_columns()
 
 
 def seed_default_org_company(db: Session) -> None:
     # No default seed data; orgs/companies must be created via admin APIs.
     return
+
+
+def _ensure_company_columns() -> None:
+    """Ensure new license/feature columns exist on companies."""
+    dialect = engine.dialect.name
+    now = int(time.time())
+
+    with engine.connect() as conn:
+        if dialect == "sqlite":
+            cols = conn.execute(sql_text("PRAGMA table_info(companies)")).fetchall()
+            col_names = {c[1] for c in cols}
+            try:
+                if "features_json" not in col_names:
+                    conn.execute(sql_text("ALTER TABLE companies ADD COLUMN features_json TEXT DEFAULT '{}'"))
+                if "license_plan" not in col_names:
+                    conn.execute(sql_text("ALTER TABLE companies ADD COLUMN license_plan TEXT DEFAULT 'trial'"))
+                if "license_active" not in col_names:
+                    conn.execute(sql_text("ALTER TABLE companies ADD COLUMN license_active BOOLEAN DEFAULT 1"))
+                if "license_current_period_end" not in col_names:
+                    conn.execute(sql_text("ALTER TABLE companies ADD COLUMN license_current_period_end INTEGER"))
+                conn.commit()
+            except Exception:
+                pass
+        else:
+            # Postgres or others: use IF NOT EXISTS
+            try:
+                conn.execute(sql_text("ALTER TABLE companies ADD COLUMN IF NOT EXISTS features_json TEXT DEFAULT '{}'"))
+            except Exception:
+                pass
+            try:
+                conn.execute(sql_text("ALTER TABLE companies ADD COLUMN IF NOT EXISTS license_plan TEXT DEFAULT 'trial'"))
+            except Exception:
+                pass
+            try:
+                conn.execute(sql_text("ALTER TABLE companies ADD COLUMN IF NOT EXISTS license_active BOOLEAN DEFAULT TRUE"))
+            except Exception:
+                pass
+            try:
+                conn.execute(
+                    sql_text("ALTER TABLE companies ADD COLUMN IF NOT EXISTS license_current_period_end INTEGER")
+                )
+            except Exception:
+                pass
+            conn.commit()
+
+        # Initialize missing license dates to 14 days from now for any NULLs
+        try:
+            conn.execute(
+                sql_text(
+                    "UPDATE companies SET license_current_period_end = :exp, license_plan = COALESCE(license_plan, 'trial'), license_active = COALESCE(license_active, TRUE) WHERE license_current_period_end IS NULL"
+                ),
+                {"exp": now + 14 * 24 * 3600},
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+
+def _ensure_payment_columns() -> None:
+    """Ensure payments have company_id."""
+    dialect = engine.dialect.name
+    with engine.connect() as conn:
+        if dialect == "sqlite":
+            cols = conn.execute(sql_text("PRAGMA table_info(payments)")).fetchall()
+            col_names = {c[1] for c in cols}
+            if "company_id" not in col_names:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payments ADD COLUMN company_id TEXT"))
+                    conn.commit()
+                except Exception:
+                    pass
+        else:
+            try:
+                conn.execute(sql_text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS company_id TEXT"))
+                conn.commit()
+            except Exception:
+                pass

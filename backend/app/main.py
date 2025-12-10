@@ -338,6 +338,17 @@ def _company_from_db(db_company: DBCompany) -> Company:
         if isinstance(parsed, dict):
             features = {**features, **parsed}
 
+    # Build license from company-level fields; auto-disable if expired
+    now = int(time.time())
+    plan = getattr(db_company, "license_plan", None) or "trial"
+    active = getattr(db_company, "license_active", True)
+    current_period_end = getattr(db_company, "license_current_period_end", None)
+    if not current_period_end:
+        current_period_end = _license_end(plan, now)
+    if current_period_end and current_period_end < now:
+        active = False
+    license = License(plan=plan, active=bool(active), current_period_end=current_period_end)
+
     return Company(
         company_id=str(company_id),
         org_id=str(db_company.org_id),
@@ -346,6 +357,7 @@ def _company_from_db(db_company: DBCompany) -> Company:
         base_url=db_company.base_url,
         rib_company_code=db_company.rib_company_code,
         allowed_users=allowed_users,
+        license=license,
         ai_api_key=db_company.ai_api_key,
         features=features,
     )
@@ -356,6 +368,30 @@ def _username_from_user_id(uid: str) -> str:
         return ""
     parts = str(uid).split(":")
     return parts[-1] if parts else uid
+
+
+def _license_end(plan: str, start_ts: int) -> int:
+    if plan == "yearly":
+        return start_ts + 365 * 24 * 3600
+    if plan == "monthly":
+        return start_ts + 30 * 24 * 3600
+    # trial default 14 days
+    return start_ts + 14 * 24 * 3600
+
+
+def _payment_from_db(p: DBPayment) -> PaymentOut:
+    return PaymentOut(
+        id=p.id,
+        org_id=p.org_id,
+        company_id=getattr(p, "company_id", None),
+        created_at=p.created_at,
+        currency=p.currency,
+        amount_cents=p.amount_cents,
+        description=p.description,
+        period_start=p.period_start,
+        period_end=p.period_end,
+        external_id=p.external_id,
+    )
 
 
 def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
@@ -403,6 +439,7 @@ def _ensure_feature(ctx: SessionCtx, feature_key: str, db: SASession) -> None:
     if not ctx.org_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org missing")
     company_features: Dict[str, bool] = {}
+    comp = None
     if ctx.company_id:
         comp = db.query(DBCompany).filter(DBCompany.company_id == ctx.company_id).first()
         if comp and getattr(comp, "features_json", None):
@@ -415,14 +452,27 @@ def _ensure_feature(ctx: SessionCtx, feature_key: str, db: SASession) -> None:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Feature not enabled for company",
             )
-    org = db.query(DBOrganization).filter(DBOrganization.org_id == ctx.org_id).first()
-    if not org:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org not found")
-    if org.license_active is False:
+    if not comp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company not found")
+
+    # License check at company level
+    now = int(time.time())
+    license_active = getattr(comp, "license_active", True)
+    license_end = getattr(comp, "license_current_period_end", None)
+    if license_end and license_end < now:
+        license_active = False
+        comp.license_active = False
+        db.commit()
+    if not license_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Company code license inactive",
         )
+
+    # org feature flags still apply
+    org = db.query(DBOrganization).filter(DBOrganization.org_id == ctx.org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Org not found")
     feats: Dict[str, bool] = dict(DEFAULT_SERVICE_FLAGS)
     if org.features_json:
         try:
@@ -491,10 +541,6 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
     org = _org_from_db(org_row)
     company = _company_from_db(company_row)
 
-    lic: License = org.license
-    if not lic.active or lic.current_period_end < now:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License inactive or expired")
-
     # optional allowed users check
     if company.allowed_users:
         allowed = [u.lower() for u in company.allowed_users]
@@ -503,6 +549,18 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User is not allowed for this company code",
             )
+
+    # Company-level license check
+    comp_row = db.query(DBCompany).filter(DBCompany.company_id == company.company_id).first()
+    lic_plan = getattr(comp_row, "license_plan", "trial")
+    lic_active = getattr(comp_row, "license_active", True)
+    lic_end = getattr(comp_row, "license_current_period_end", None)
+    if lic_end and lic_end < now:
+        lic_active = False
+        comp_row.license_active = False
+        db.commit()
+    if not lic_active or (lic_end and lic_end < now):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="License inactive or expired")
 
 
 
@@ -639,12 +697,13 @@ class AdminCreateOrgRequest(BaseModel):
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
     notes: Optional[str] = None
-    plan: Literal["monthly", "yearly"] = "monthly"
-    current_period_end: int
     base_url: str
     rib_company_code: str
     company_code: str
     allowed_users: List[str] = Field(default_factory=list)
+    company_plan: Literal["trial", "monthly", "yearly"] = "trial"
+    company_current_period_end: Optional[int] = None
+    company_active: bool = True
 
 
 class AdminUpdateOrgRequest(BaseModel):
@@ -652,9 +711,6 @@ class AdminUpdateOrgRequest(BaseModel):
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
     notes: Optional[str] = None
-    plan: Optional[Literal["monthly", "yearly"]] = None
-    active: Optional[bool] = None
-    current_period_end: Optional[int] = None
     features: Optional[Dict[str, bool]] = None
 
 
@@ -665,6 +721,9 @@ class AdminUpdateCompanyRequest(BaseModel):
     allowed_users: Optional[List[str]] = None
     ai_api_key: Optional[str] = None
     features: Optional[Dict[str, bool]] = None
+    plan: Optional[Literal["trial", "monthly", "yearly"]] = None
+    active: Optional[bool] = None
+    current_period_end: Optional[int] = None
 
 
 class AdminCreateCompanyRequest(BaseModel):
@@ -674,6 +733,17 @@ class AdminCreateCompanyRequest(BaseModel):
     allowed_users: List[str] = Field(default_factory=list)
     ai_api_key: Optional[str] = None
     features: Dict[str, bool] = Field(default_factory=lambda: dict(DEFAULT_SERVICE_FLAGS))
+    plan: Literal["trial", "monthly", "yearly"] = "trial"
+    current_period_end: Optional[int] = None
+    active: bool = True
+
+
+class AdminPaymentRequest(BaseModel):
+    payment_date: int  # epoch seconds
+    plan: Literal["monthly", "yearly"] = "monthly"
+    amount_cents: int = 0
+    currency: str = "EUR"
+    description: Optional[str] = None
 
 
 @app.get("/api/admin/orgs", response_model=List[OrgListItem])
@@ -712,8 +782,6 @@ def admin_create_org(
     org_id = f"org_{uuid.uuid4().hex[:10]}"
     company_id = f"comp_{uuid.uuid4().hex[:10]}"
 
-    lic_end = payload.current_period_end or (now + 365 * 24 * 3600)
-
     # default features
     features = dict(DEFAULT_SERVICE_FLAGS)
 
@@ -723,11 +791,14 @@ def admin_create_org(
         contact_email=payload.contact_email,
         contact_phone=payload.contact_phone,
         notes=payload.notes,
-        license_plan=payload.plan,
+        license_plan="yearly",
         license_active=True,
-        license_current_period_end=lic_end,
+        license_current_period_end=now + 365 * 24 * 3600,
         features_json=json.dumps(features),
     )
+
+    plan = payload.company_plan or "trial"
+    default_end = _license_end(plan, payload.company_current_period_end or now)
 
     allowed = payload.allowed_users or []
     c = DBCompany(
@@ -740,6 +811,9 @@ def admin_create_org(
         allowed_users_json=json.dumps(allowed),
         ai_api_key=None,
         features_json=json.dumps(features),
+        license_plan=plan,
+        license_active=payload.company_active,
+        license_current_period_end=default_end,
     )
 
     db.add(o)
@@ -765,7 +839,10 @@ def admin_create_company(
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
 
+    now = int(time.time())
     company_id = f"comp_{uuid.uuid4().hex[:10]}"
+    plan = payload.plan or "trial"
+    end_ts = payload.current_period_end or _license_end(plan, now)
     c = DBCompany(
         company_id=company_id,
         org_id=org_id,
@@ -776,6 +853,9 @@ def admin_create_company(
         allowed_users_json=json.dumps(payload.allowed_users or []),
         ai_api_key=payload.ai_api_key,
         features_json=json.dumps(payload.features or DEFAULT_SERVICE_FLAGS),
+        license_plan=plan,
+        license_active=payload.active,
+        license_current_period_end=end_ts,
     )
     db.add(c)
     db.commit()
@@ -802,12 +882,6 @@ def admin_update_org(
         o.contact_phone = payload.contact_phone
     if payload.notes is not None:
         o.notes = payload.notes
-    if payload.plan is not None:
-        o.license_plan = payload.plan
-    if payload.current_period_end is not None:
-        o.license_current_period_end = payload.current_period_end
-    if payload.active is not None:
-        o.license_active = payload.active
     if payload.features is not None:
         existing: Dict[str, bool] = {}
         if o.features_json:
@@ -854,10 +928,60 @@ def admin_update_company(
                 existing = {}
         existing.update(payload.features)
         c.features_json = json.dumps(existing)
+    if payload.plan is not None:
+        c.license_plan = payload.plan
+    if payload.active is not None:
+        c.license_active = payload.active
+    if payload.current_period_end is not None:
+        c.license_current_period_end = payload.current_period_end
 
     db.commit()
     db.refresh(c)
     return _company_from_db(c)
+
+
+@app.get("/api/admin/companies/{company_id}/payments", response_model=List[PaymentOut])
+def admin_list_payments(
+    company_id: str,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    payments = db.query(DBPayment).filter(DBPayment.company_id == company_id).order_by(DBPayment.created_at.desc()).all()
+    return [_payment_from_db(p) for p in payments]
+
+
+@app.post("/api/admin/companies/{company_id}/payments", response_model=PaymentOut)
+def admin_create_payment(
+    company_id: str,
+    payload: AdminPaymentRequest,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    comp = db.query(DBCompany).filter(DBCompany.company_id == company_id).first()
+    if not comp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    start = payload.payment_date
+    end = _license_end(payload.plan, start)
+    pay = DBPayment(
+        org_id=comp.org_id,
+        company_id=company_id,
+        created_at=int(time.time()),
+        currency=payload.currency,
+        amount_cents=payload.amount_cents,
+        description=payload.description,
+        period_start=start,
+        period_end=end,
+        external_id=None,
+    )
+    comp.license_plan = payload.plan
+    comp.license_active = True
+    comp.license_current_period_end = end
+
+    db.add(pay)
+    db.commit()
+    db.refresh(pay)
+    return _payment_from_db(pay)
 
 
 # ───────────────────────── Admin: Metrics ─────────────────────────
@@ -928,6 +1052,19 @@ class TicketListItem(BaseModel):
     status: str
     created_at: int
     updated_at: int
+
+
+class PaymentOut(BaseModel):
+    id: int
+    org_id: str
+    company_id: Optional[str] = None
+    created_at: int
+    currency: str
+    amount_cents: int
+    description: Optional[str] = None
+    period_start: Optional[int] = None
+    period_end: Optional[int] = None
+    external_id: Optional[str] = None
 
 
 @app.get("/api/user/tickets", response_model=List[TicketListItem])

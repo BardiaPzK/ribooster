@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 # ───────────────────────── Core domain models ─────────────────────────
 
 class License(BaseModel):
-    plan: Literal["monthly", "yearly"] = "monthly"
+    plan: Literal["trial", "monthly", "yearly"] = "trial"
     active: bool = True
     current_period_end: int
 
@@ -32,6 +32,7 @@ class Company(BaseModel):
     base_url: str  # RIB host URL
     rib_company_code: str  # RIB company code (e.g. "999")
     allowed_users: List[str] = Field(default_factory=list)
+    license: License | None = None
     # OpenAI API key used for helpdesk etc.
     ai_api_key: Optional[str] = None
     features: Dict[str, bool] = Field(default_factory=dict)

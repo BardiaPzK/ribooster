@@ -1,6 +1,6 @@
 // frontend/src/pages/admin/AdminOrgs.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import { api, OrgListItem, Company } from "../../lib/api";
+import { api, OrgListItem, Company, Payment } from "../../lib/api";
 
 const serviceOptions = [
   { key: "projects.backup", label: "Project backup" },
@@ -14,55 +14,103 @@ const defaultFeatures: Record<string, boolean> = {
   textsql: true,
 };
 
+const toDateInput = (ts?: number | null) => {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const iso = d.toISOString();
+  return iso.slice(0, 16); // yyyy-MM-ddTHH:mm
+};
+
+const fromDateInput = (v: string) => {
+  if (!v) return null;
+  return Math.floor(new Date(v).getTime() / 1000);
+};
+
 const AdminOrgs: React.FC = () => {
   const [orgs, setOrgs] = useState<OrgListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // create org form
-  const [name, setName] = useState("");
-  const [companyCode, setCompanyCode] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [ribCompanyCode, setRibCompanyCode] = useState("999");
-  const [contactEmail, setContactEmail] = useState("");
-  const [allowedUsersStr, setAllowedUsersStr] = useState("");
 
   // search + selection
   const [search, setSearch] = useState("");
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
 
-  // edit fields
+  // edit org
   const [editOrgName, setEditOrgName] = useState("");
   const [editContactEmail, setEditContactEmail] = useState("");
   const [editContactPhone, setEditContactPhone] = useState("");
-  const [editPlan, setEditPlan] = useState<"monthly" | "yearly">("monthly");
-  const [editActive, setEditActive] = useState(true);
-  const [editFeatures, setEditFeatures] = useState<Record<string, boolean>>({});
+
+  // edit company
   const [editBaseUrl, setEditBaseUrl] = useState("");
   const [editRibCompanyCode, setEditRibCompanyCode] = useState("");
   const [editCompanyCode, setEditCompanyCode] = useState("");
   const [editAllowedUsersStr, setEditAllowedUsersStr] = useState("");
   const [editAiKey, setEditAiKey] = useState("");
+  const [editFeatures, setEditFeatures] = useState<Record<string, boolean>>({});
+  const [editPlan, setEditPlan] = useState<"trial" | "monthly" | "yearly">("trial");
+  const [editActive, setEditActive] = useState(true);
+  const [editExpiry, setEditExpiry] = useState("");
 
-  // add company form
+  // payments
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [payDate, setPayDate] = useState("");
+  const [payPlan, setPayPlan] = useState<"monthly" | "yearly">("monthly");
+  const [payAmount, setPayAmount] = useState<number>(0);
+  const [payDesc, setPayDesc] = useState("");
+
+  // new company
   const [newCompanyCode, setNewCompanyCode] = useState("");
   const [newBaseUrl, setNewBaseUrl] = useState("");
   const [newRibCompany, setNewRibCompany] = useState("999");
   const [newAllowedUsersStr, setNewAllowedUsersStr] = useState("");
   const [newAiKey, setNewAiKey] = useState("");
+  const [newPlan, setNewPlan] = useState<"trial" | "monthly" | "yearly">("trial");
+  const [newExpiry, setNewExpiry] = useState("");
   const [newFeatures, setNewFeatures] = useState<Record<string, boolean>>({ ...defaultFeatures });
+  // new org
+  const [newOrgName, setNewOrgName] = useState("");
+  const [newOrgContactEmail, setNewOrgContactEmail] = useState("");
+  const [newOrgCompanyCode, setNewOrgCompanyCode] = useState("");
+  const [newOrgBaseUrl, setNewOrgBaseUrl] = useState("");
+  const [newOrgRibCode, setNewOrgRibCode] = useState("999");
+  const [newOrgAllowedUsers, setNewOrgAllowedUsers] = useState("");
+  const [newOrgPlan, setNewOrgPlan] = useState<"trial" | "monthly" | "yearly">("trial");
+  const [newOrgExpiry, setNewOrgExpiry] = useState("");
+
+  const loadPayments = async (companyId?: string | null) => {
+    if (!companyId) {
+      setPayments([]);
+      return;
+    }
+    try {
+      const data = await api.admin.listPayments(companyId);
+      setPayments(data);
+    } catch (e) {
+      // ignore silently in UI
+      setPayments([]);
+    }
+  };
 
   const load = () => {
     setLoading(true);
     api.admin
       .listOrgs()
-      .then((data) => {
+      .then(async (data) => {
         setOrgs(data);
-        if (!selectedOrgId && data[0]) {
-          setSelectedOrgId(data[0].org.org_id);
-          const firstCompany = data[0].companies?.[0] || data[0].company;
-          setSelectedCompanyId(firstCompany?.company_id ?? null);
+        let orgId = selectedOrgId;
+        let companyId = selectedCompanyId;
+        if (!orgId && data[0]) {
+          orgId = data[0].org.org_id;
+        }
+        const org = data.find((o) => o.org.org_id === orgId) || data[0];
+        if (org) {
+          if (!companyId) {
+            companyId = org.companies?.[0]?.company_id || org.company?.company_id || null;
+          }
+          setSelectedOrgId(org.org.org_id);
+          setSelectedCompanyId(companyId || null);
+          await loadPayments(companyId || null);
         }
       })
       .catch((e: any) => setError(e?.message || "Failed to load orgs"))
@@ -73,41 +121,6 @@ const AdminOrgs: React.FC = () => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const createOrg = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    try {
-      const now = Math.floor(Date.now() / 1000);
-      const payload = {
-        name: name.trim(),
-        contact_email: contactEmail.trim() || undefined,
-        contact_phone: undefined,
-        notes: undefined,
-        plan: "monthly" as const,
-        current_period_end: now + 365 * 24 * 3600,
-        base_url: baseUrl.trim(),
-        rib_company_code: ribCompanyCode.trim(),
-        company_code: companyCode.trim(),
-        allowed_users: allowedUsersStr
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      };
-      const created = await api.admin.createOrg(payload);
-      setName("");
-      setCompanyCode("");
-      setBaseUrl("");
-      setRibCompanyCode("999");
-      setContactEmail("");
-      setAllowedUsersStr("");
-      setSelectedOrgId(created.org.org_id);
-      setSelectedCompanyId(created.company?.company_id ?? created.companies?.[0]?.company_id ?? null);
-      load();
-    } catch (e: any) {
-      setError(e?.message || "Failed to create organization");
-    }
-  };
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase();
@@ -130,26 +143,26 @@ const AdminOrgs: React.FC = () => {
     return selectedOrg.companies[0] || selectedOrg.company || null;
   }, [selectedOrg, selectedCompanyId]);
 
-  // whenever selection changes, populate edit fields
+  // populate edit fields on selection
   useEffect(() => {
     if (!selectedOrg || !selectedCompany) return;
-    const { org } = selectedOrg;
-    const company = selectedCompany;
+    setEditOrgName(selectedOrg.org.name);
+    setEditContactEmail(selectedOrg.org.contact_email || "");
+    setEditContactPhone(selectedOrg.org.contact_phone || "");
 
-    setEditOrgName(org.name);
-    setEditContactEmail(org.contact_email || "");
-    setEditContactPhone(org.contact_phone || "");
-    setEditPlan(org.license.plan);
-    setEditActive(org.license.active);
-    setEditFeatures({ ...defaultFeatures, ...company.features });
-    setEditBaseUrl(company.base_url);
-    setEditRibCompanyCode(company.rib_company_code);
-    setEditCompanyCode(company.code);
-    setEditAllowedUsersStr((company.allowed_users || []).join(", "));
-    setEditAiKey(company.ai_api_key || "");
+    setEditBaseUrl(selectedCompany.base_url);
+    setEditRibCompanyCode(selectedCompany.rib_company_code);
+    setEditCompanyCode(selectedCompany.code);
+    setEditAllowedUsersStr((selectedCompany.allowed_users || []).join(", "));
+    setEditAiKey(selectedCompany.ai_api_key || "");
+    setEditFeatures({ ...defaultFeatures, ...selectedCompany.features });
+    setEditPlan(selectedCompany.license?.plan || "trial");
+    setEditActive(selectedCompany.license?.active !== false);
+    setEditExpiry(toDateInput(selectedCompany.license?.current_period_end));
+    loadPayments(selectedCompany.company_id);
   }, [selectedOrg, selectedCompany]);
 
-  // Reset the new company defaults when switching organizations
+  // reset new company feature toggles when switching org
   useEffect(() => {
     setNewFeatures({ ...defaultFeatures });
   }, [selectedOrgId]);
@@ -159,16 +172,12 @@ const AdminOrgs: React.FC = () => {
     if (!selectedOrg || !selectedCompany) return;
     setError(null);
     try {
-      // update org
       await api.admin.updateOrg(selectedOrg.org.org_id, {
         name: editOrgName.trim(),
         contact_email: editContactEmail.trim() || undefined,
         contact_phone: editContactPhone.trim() || undefined,
-        plan: editPlan,
-        active: editActive,
       });
 
-      // update selected company
       await api.admin.updateCompany(selectedCompany.company_id, {
         base_url: editBaseUrl.trim(),
         rib_company_code: editRibCompanyCode.trim(),
@@ -178,7 +187,10 @@ const AdminOrgs: React.FC = () => {
           .map((s) => s.trim())
           .filter(Boolean),
         ai_api_key: editAiKey.trim() || null,
-        features: Object.keys(editFeatures).length ? editFeatures : defaultFeatures,
+        features: editFeatures,
+        plan: editPlan,
+        active: editActive,
+        current_period_end: fromDateInput(editExpiry),
       });
       load();
     } catch (e: any) {
@@ -203,13 +215,18 @@ const AdminOrgs: React.FC = () => {
           .map((s) => s.trim())
           .filter(Boolean),
         ai_api_key: newAiKey.trim() || undefined,
-        features: Object.keys(newFeatures).length ? newFeatures : defaultFeatures,
+        features: newFeatures,
+        plan: newPlan,
+        current_period_end: fromDateInput(newExpiry),
+        active: true,
       });
       setNewCompanyCode("");
       setNewBaseUrl("");
       setNewRibCompany("999");
       setNewAllowedUsersStr("");
       setNewAiKey("");
+      setNewPlan("trial");
+      setNewExpiry("");
       setNewFeatures({ ...defaultFeatures });
       setSelectedCompanyId(created.company_id);
       load();
@@ -218,327 +235,219 @@ const AdminOrgs: React.FC = () => {
     }
   };
 
+  const addPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCompany) return;
+    setError(null);
+    try {
+      await api.admin.addPayment(selectedCompany.company_id, {
+        payment_date: fromDateInput(payDate) || Math.floor(Date.now() / 1000),
+        plan: payPlan,
+        amount_cents: payAmount || 0,
+        currency: "EUR",
+        description: payDesc || undefined,
+      });
+      await loadPayments(selectedCompany.company_id);
+      load();
+      setPayDesc("");
+    } catch (e: any) {
+      setError(e?.message || "Failed to add payment");
+    }
+  };
+
+  const createOrg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      const created = await api.admin.createOrg({
+        name: newOrgName.trim(),
+        contact_email: newOrgContactEmail.trim() || undefined,
+        base_url: newOrgBaseUrl.trim(),
+        rib_company_code: newOrgRibCode.trim(),
+        company_code: newOrgCompanyCode.trim(),
+        allowed_users: newOrgAllowedUsers
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        company_plan: newOrgPlan,
+        company_current_period_end: fromDateInput(newOrgExpiry) || undefined,
+        company_active: true,
+      });
+      setNewOrgName("");
+      setNewOrgContactEmail("");
+      setNewOrgCompanyCode("");
+      setNewOrgBaseUrl("");
+      setNewOrgRibCode("999");
+      setNewOrgAllowedUsers("");
+      setNewOrgPlan("trial");
+      setNewOrgExpiry("");
+      setSelectedOrgId(created.org.org_id);
+      setSelectedCompanyId(created.company?.company_id || null);
+      load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to create organization");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-lg font-semibold text-slate-100">Organizations</div>
+        <div className="text-lg font-semibold text-slate-100">Organizations & Companies</div>
         <input
           className="w-56 rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-          placeholder="Search org / company…"
+          placeholder="Search org / company..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-
       {error && <div className="text-sm text-red-400">{error}</div>}
 
-      {/* Create org */}
-      <form
-        onSubmit={createOrg}
-        className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs"
-      >
-        <div className="space-y-1">
-          <div className="font-medium text-slate-200">New organization</div>
-          <input
-            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Org name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-          />
-          <input
-            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Contact email"
-            value={contactEmail}
-            onChange={(e) => setContactEmail(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <div className="font-medium text-slate-200">RIB connection</div>
-          <input
-            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Company code (login)"
-            value={companyCode}
-            onChange={(e) => setCompanyCode(e.target.value)}
-            required
-          />
-          <input
-            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="RIB base URL"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            required
-          />
-          <input
-            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="RIB company code (e.g. 999)"
-            value={ribCompanyCode}
-            onChange={(e) => setRibCompanyCode(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <div className="font-medium text-slate-200">Users</div>
-          <textarea
-            className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-            rows={3}
-            placeholder="Allowed usernames (comma separated). Leave empty = all users."
-            value={allowedUsersStr}
-            onChange={(e) => setAllowedUsersStr(e.target.value)}
-          />
-          <div className="flex justify-end">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+        <div className="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/70 p-3 space-y-2">
+          <div className="font-medium text-slate-200">Organizations</div>
+          {/* Create org */}
+          <form className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-2" onSubmit={createOrg}>
+            <div className="text-[11px] font-medium text-slate-300">Create organization</div>
+            <input
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="Org name"
+              value={newOrgName}
+              onChange={(e) => setNewOrgName(e.target.value)}
+              required
+            />
+            <input
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="Contact email"
+              value={newOrgContactEmail}
+              onChange={(e) => setNewOrgContactEmail(e.target.value)}
+            />
+            <input
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="Company code"
+              value={newOrgCompanyCode}
+              onChange={(e) => setNewOrgCompanyCode(e.target.value)}
+              required
+            />
+            <input
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="RIB base URL"
+              value={newOrgBaseUrl}
+              onChange={(e) => setNewOrgBaseUrl(e.target.value)}
+              required
+            />
+            <input
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="RIB company code"
+              value={newOrgRibCode}
+              onChange={(e) => setNewOrgRibCode(e.target.value)}
+            />
+            <select
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              value={newOrgPlan}
+              onChange={(e) => setNewOrgPlan(e.target.value as "trial" | "monthly" | "yearly")}
+            >
+              <option value="trial">trial</option>
+              <option value="monthly">monthly</option>
+              <option value="yearly">yearly</option>
+            </select>
+            <label className="block text-[11px] text-slate-400">Expiry (optional)</label>
+            <input
+              type="datetime-local"
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              value={newOrgExpiry}
+              onChange={(e) => setNewOrgExpiry(e.target.value)}
+            />
+            <textarea
+              className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+              rows={2}
+              placeholder="Allowed users (comma separated)"
+              value={newOrgAllowedUsers}
+              onChange={(e) => setNewOrgAllowedUsers(e.target.value)}
+            />
             <button
               type="submit"
-              className="mt-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5"
+              className="w-full rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5"
             >
               Create org
             </button>
-          </div>
-        </div>
-      </form>
-
-      {/* Existing orgs + edit panel */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
-        <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
-          <div className="font-medium mb-2 text-slate-200">Existing orgs</div>
+          </form>
           {loading ? (
-            <div className="text-slate-500">Loading…</div>
+            <div className="text-slate-500">Loading...</div>
           ) : filtered.length === 0 ? (
-            <div className="text-slate-500">No organizations found.</div>
+            <div className="text-slate-500">No organizations.</div>
           ) : (
-            <div className="overflow-auto max-h-72">
-              <table className="w-full text-left">
-                <thead className="text-slate-400 border-b border-slate-800">
-                  <tr>
-                    <th className="py-1 pr-2">Org</th>
-                    <th className="py-1 pr-2">Companies</th>
-                    <th className="py-1 pr-2">License</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((item) => (
-                    <tr
-                      key={item.org.org_id}
-                      className={`border-b border-slate-900/60 cursor-pointer ${
-                        item.org.org_id === selectedOrgId ? "bg-slate-800/60" : "hover:bg-slate-800/40"
-                      }`}
-                      onClick={() => {
-                        setSelectedOrgId(item.org.org_id);
-                        setSelectedCompanyId(item.companies[0]?.company_id || null);
-                      }}
-                    >
-                      <td className="py-1 pr-2 text-slate-100">{item.org.name}</td>
-                      <td className="py-1 pr-2 text-slate-300">
-                        {item.companies.map((c) => c.code).join(", ")}
-                      </td>
-                      <td className="py-1 pr-2 text-slate-300">
-                        {item.org.license.plan} – {item.org.license.active ? "active" : "inactive"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-2 max-h-[520px] overflow-auto">
+              {filtered.map((item) => (
+                <button
+                  key={item.org.org_id}
+                  className={`w-full text-left rounded-xl border px-3 py-2 transition ${
+                    item.org.org_id === selectedOrgId
+                      ? "border-indigo-500 bg-indigo-500/10 text-indigo-100"
+                      : "border-slate-800 bg-slate-950 text-slate-200 hover:border-slate-700"
+                  }`}
+                  onClick={() => {
+                    setSelectedOrgId(item.org.org_id);
+                    setSelectedCompanyId(item.companies[0]?.company_id || item.company?.company_id || null);
+                  }}
+                >
+                  <div className="font-semibold">{item.org.name}</div>
+                  <div className="text-[11px] text-slate-400">
+                    {item.companies.map((c) => c.code).join(", ")}
+                  </div>
+                </button>
+              ))}
             </div>
           )}
-        </div>
-
-        {/* Edit panel */}
-        <div className="lg:col-span-1 space-y-3">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 space-y-2">
-            <div className="font-medium text-slate-200 mb-1">Edit organization</div>
-            {selectedOrg && selectedCompany ? (
-              <form className="space-y-2" onSubmit={saveSelected}>
-                <div className="space-y-1">
-                  <div className="text-[11px] font-medium text-slate-300">Company codes</div>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedOrg.companies.map((c) => (
-                      <button
-                        key={c.company_id}
-                        type="button"
-                        onClick={() => setSelectedCompanyId(c.company_id)}
-                        className={`rounded-full border px-3 py-1 text-[11px] transition ${
-                          selectedCompanyId === c.company_id
-                            ? "border-indigo-500 bg-indigo-500/10 text-indigo-200"
-                            : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500"
-                        }`}
-                      >
-                        {c.code}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] mb-0.5 text-slate-400">Org name</label>
-                  <input
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={editOrgName}
-                    onChange={(e) => setEditOrgName(e.target.value)}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] mb-0.5 text-slate-400">Contact email</label>
-                    <input
-                      className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={editContactEmail}
-                      onChange={(e) => setEditContactEmail(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] mb-0.5 text-slate-400">Contact phone</label>
-                    <input
-                      className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={editContactPhone}
-                      onChange={(e) => setEditContactPhone(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 items-center">
-                  <div>
-                    <label className="block text-[11px] mb-0.5 text-slate-400">Plan</label>
-                    <select
-                      className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-[11px] outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={editPlan}
-                      onChange={(e) => setEditPlan(e.target.value as "monthly" | "yearly")}
-                    >
-                      <option value="monthly">monthly</option>
-                      <option value="yearly">yearly</option>
-                    </select>
-                  </div>
-                  <label className="inline-flex items-center gap-2 text-[11px] text-slate-300 mt-4">
-                    <input
-                      type="checkbox"
-                      checked={editActive}
-                      onChange={(e) => setEditActive(e.target.checked)}
-                    />
-                    License active
-                  </label>
-                </div>
-
-                <div className="border-t border-slate-800 pt-2">
-                  <div className="text-[11px] font-medium text-slate-300 mb-1">Company</div>
-                  <select
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={selectedCompany.company_id}
-                    onChange={(e) => setSelectedCompanyId(e.target.value)}
-                  >
-                    {selectedOrg.companies.map((c) => (
-                      <option key={c.company_id} value={c.company_id}>
-                        {c.code}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="border-t border-slate-800 pt-2">
-                  <div className="text-[11px] font-medium text-slate-300 mb-1">Services</div>
-                  <div className="space-y-1">
-                    {serviceOptions.map((svc) => (
-                      <label key={svc.key} className="flex items-center justify-between text-[11px] text-slate-300">
-                        <span>{svc.label}</span>
-                        <button
-                          type="button"
-                          onClick={() => toggleFeature(svc.key)}
-                          className={`relative inline-flex h-5 w-10 items-center rounded-full transition ${
-                            editFeatures[svc.key] ? "bg-indigo-500" : "bg-slate-700"
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                              editFeatures[svc.key] ? "translate-x-5" : "translate-x-1"
-                            }`}
-                          />
-                        </button>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-800 pt-2 space-y-1">
-                  <div className="text-[11px] font-medium text-slate-300">Company settings</div>
-                  <input
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    placeholder="Company code"
-                    value={editCompanyCode}
-                    onChange={(e) => setEditCompanyCode(e.target.value)}
-                  />
-                  <input
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    placeholder="RIB base URL"
-                    value={editBaseUrl}
-                    onChange={(e) => setEditBaseUrl(e.target.value)}
-                  />
-                  <input
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    placeholder="RIB company code (e.g. 999)"
-                    value={editRibCompanyCode}
-                    onChange={(e) => setEditRibCompanyCode(e.target.value)}
-                  />
-                  <textarea
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-                    rows={2}
-                    placeholder="Allowed users (comma separated)"
-                    value={editAllowedUsersStr}
-                    onChange={(e) => setEditAllowedUsersStr(e.target.value)}
-                  />
-                  <input
-                    className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    placeholder="OpenAI API key (optional)"
-                    value={editAiKey}
-                    onChange={(e) => setEditAiKey(e.target.value)}
-                  />
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    type="submit"
-                    className="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5"
-                  >
-                    Save changes
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <div className="text-slate-500 text-xs">Select an organization from the list to edit.</div>
-            )}
-          </div>
 
           {/* Add company */}
           {selectedOrg && (
-            <form
-              onSubmit={createCompany}
-              className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 space-y-2"
-            >
-              <div className="font-medium text-slate-200">Add company code</div>
+            <form onSubmit={createCompany} className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-2">
+              <div className="font-medium text-slate-200">Add company</div>
               <input
-                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="Company code"
                 value={newCompanyCode}
                 onChange={(e) => setNewCompanyCode(e.target.value)}
                 required
               />
               <input
-                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="RIB base URL"
                 value={newBaseUrl}
                 onChange={(e) => setNewBaseUrl(e.target.value)}
                 required
               />
               <input
-                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="RIB company code"
                 value={newRibCompany}
                 onChange={(e) => setNewRibCompany(e.target.value)}
               />
+              <select
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                value={newPlan}
+                onChange={(e) => setNewPlan(e.target.value as "trial" | "monthly" | "yearly")}
+              >
+                <option value="trial">trial</option>
+                <option value="monthly">monthly</option>
+                <option value="yearly">yearly</option>
+              </select>
+              <label className="block text-[11px] text-slate-400">Expiry (optional)</label>
+              <input
+                type="datetime-local"
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                value={newExpiry}
+                onChange={(e) => setNewExpiry(e.target.value)}
+              />
               <textarea
-                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
                 rows={2}
                 placeholder="Allowed users (comma separated)"
                 value={newAllowedUsersStr}
                 onChange={(e) => setNewAllowedUsersStr(e.target.value)}
               />
               <input
-                className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="OpenAI API key (optional)"
                 value={newAiKey}
                 onChange={(e) => setNewAiKey(e.target.value)}
@@ -550,9 +459,7 @@ const AdminOrgs: React.FC = () => {
                     <span>{svc.label}</span>
                     <button
                       type="button"
-                      onClick={() =>
-                        setNewFeatures((prev) => ({ ...prev, [svc.key]: !prev[svc.key] }))
-                      }
+                      onClick={() => setNewFeatures((prev) => ({ ...prev, [svc.key]: !prev[svc.key] }))}
                       className={`relative inline-flex h-5 w-10 items-center rounded-full transition ${
                         newFeatures[svc.key] !== false ? "bg-indigo-500" : "bg-slate-700"
                       }`}
@@ -568,11 +475,235 @@ const AdminOrgs: React.FC = () => {
               </div>
               <button
                 type="submit"
-                className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs px-3 py-1.5"
+                className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs px-3 py-1.5 w-full"
               >
                 Add company
               </button>
             </form>
+          )}
+        </div>
+
+        <div className="lg:col-span-2 space-y-3">
+          {selectedOrg && selectedCompany ? (
+            <>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-100">{selectedOrg.org.name}</div>
+                    <div className="text-[11px] text-slate-400">
+                      Org ID: {selectedOrg.org.org_id} • Companies:{" "}
+                      {selectedOrg.companies.map((c) => c.code).join(", ")}
+                    </div>
+                  </div>
+                  <select
+                    className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={selectedCompanyId || selectedCompany.company_id}
+                    onChange={(e) => setSelectedCompanyId(e.target.value)}
+                  >
+                    {selectedOrg.companies.map((c) => (
+                      <option key={c.company_id} value={c.company_id}>
+                        {c.code}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <form className="grid grid-cols-1 md:grid-cols-2 gap-3" onSubmit={saveSelected}>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-0.5">Org name</label>
+                      <input
+                        className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={editOrgName}
+                        onChange={(e) => setEditOrgName(e.target.value)}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-0.5">Contact email</label>
+                        <input
+                          className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={editContactEmail}
+                          onChange={(e) => setEditContactEmail(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-0.5">Contact phone</label>
+                        <input
+                          className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={editContactPhone}
+                          onChange={(e) => setEditContactPhone(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-2 space-y-1">
+                      <div className="text-[11px] font-medium text-slate-300">Company settings</div>
+                      <input
+                        className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder="Company code"
+                        value={editCompanyCode}
+                        onChange={(e) => setEditCompanyCode(e.target.value)}
+                      />
+                      <input
+                        className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder="RIB base URL"
+                        value={editBaseUrl}
+                        onChange={(e) => setEditBaseUrl(e.target.value)}
+                      />
+                      <input
+                        className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder="RIB company code (e.g. 999)"
+                        value={editRibCompanyCode}
+                        onChange={(e) => setEditRibCompanyCode(e.target.value)}
+                      />
+                      <textarea
+                        className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                        rows={2}
+                        placeholder="Allowed users (comma separated)"
+                        value={editAllowedUsersStr}
+                        onChange={(e) => setEditAllowedUsersStr(e.target.value)}
+                      />
+                      <input
+                        className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder="OpenAI API key (optional)"
+                        value={editAiKey}
+                        onChange={(e) => setEditAiKey(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-0.5">License plan</label>
+                        <select
+                          className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={editPlan}
+                          onChange={(e) => setEditPlan(e.target.value as "trial" | "monthly" | "yearly")}
+                        >
+                          <option value="trial">trial</option>
+                          <option value="monthly">monthly</option>
+                          <option value="yearly">yearly</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-0.5">Expiry</label>
+                        <input
+                          type="datetime-local"
+                          className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={editExpiry}
+                          onChange={(e) => setEditExpiry(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-[11px] text-slate-300">
+                      <input type="checkbox" checked={editActive} onChange={(e) => setEditActive(e.target.checked)} />
+                      License active
+                    </label>
+
+                    <div className="border-t border-slate-800 pt-2">
+                      <div className="text-[11px] font-medium text-slate-300 mb-1">Services</div>
+                      <div className="space-y-1">
+                        {serviceOptions.map((svc) => (
+                          <label
+                            key={svc.key}
+                            className="flex items-center justify-between text-[11px] text-slate-300"
+                          >
+                            <span>{svc.label}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleFeature(svc.key)}
+                              className={`relative inline-flex h-5 w-10 items-center rounded-full transition ${
+                                editFeatures[svc.key] ? "bg-indigo-500" : "bg-slate-700"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                                  editFeatures[svc.key] ? "translate-x-5" : "translate-x-1"
+                                }`}
+                              />
+                            </button>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-2 space-y-2">
+                      <div className="text-[11px] font-medium text-slate-300">Payments</div>
+                      <form className="grid grid-cols-2 gap-2" onSubmit={addPayment}>
+                        <input
+                          type="datetime-local"
+                          className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={payDate}
+                          onChange={(e) => setPayDate(e.target.value)}
+                          required
+                        />
+                        <select
+                          className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={payPlan}
+                          onChange={(e) => setPayPlan(e.target.value as "monthly" | "yearly")}
+                        >
+                          <option value="monthly">monthly</option>
+                          <option value="yearly">yearly</option>
+                        </select>
+                        <input
+                          type="number"
+                          className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          placeholder="Amount cents"
+                          value={payAmount}
+                          onChange={(e) => setPayAmount(Number(e.target.value))}
+                        />
+                        <input
+                          className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          placeholder="Description"
+                          value={payDesc}
+                          onChange={(e) => setPayDesc(e.target.value)}
+                        />
+                        <button
+                          type="submit"
+                          className="col-span-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs px-3 py-1.5"
+                        >
+                          Add payment & update license
+                        </button>
+                      </form>
+                      <div className="max-h-32 overflow-auto space-y-1">
+                        {payments.map((p) => (
+                          <div
+                            key={p.id}
+                            className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                          >
+                            <div className="flex justify-between">
+                              <span>{(p.amount_cents / 100).toFixed(2)} {p.currency}</span>
+                              <span>{new Date((p.period_start || p.created_at) * 1000).toLocaleDateString()}</span>
+                            </div>
+                            <div className="text-slate-400">
+                              Period end:{" "}
+                              {p.period_end ? new Date(p.period_end * 1000).toLocaleDateString() : "n/a"} •{" "}
+                              {p.description || "no desc"}
+                            </div>
+                          </div>
+                        ))}
+                        {!payments.length && <div className="text-[11px] text-slate-500">No payments logged.</div>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-2 flex justify-end pt-2 border-t border-slate-800">
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs px-4 py-2"
+                    >
+                      Save changes
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 text-slate-500 text-xs">
+              Select an organization to view details.
+            </div>
           )}
         </div>
       </div>

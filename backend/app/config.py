@@ -36,6 +36,6 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-# ---- Default seed data (none; data comes from the database) ----
+# ---- Default seed data (none) ----
 DEFAULT_ORGS: list[dict] = []
 DEFAULT_COMPANIES: list[dict] = []

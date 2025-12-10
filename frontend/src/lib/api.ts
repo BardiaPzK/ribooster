@@ -68,7 +68,7 @@ export interface MeResponse {
 }
 
 export interface License {
-  plan: "monthly" | "yearly";
+  plan: "trial" | "monthly" | "yearly";
   active: boolean;
   current_period_end: number;
 }
@@ -91,8 +91,9 @@ export interface Company {
   base_url: string;
   rib_company_code: string;
   allowed_users: string[];
+  license?: License | null;
   ai_api_key?: string | null;
-   features: Record<string, boolean>;
+  features: Record<string, boolean>;
 }
 
 export interface MetricCounters {
@@ -131,6 +132,19 @@ export interface Ticket {
   created_at: number;
   updated_at: number;
   messages: { message_id: string; timestamp: number; sender: string; text: string }[];
+}
+
+export interface Payment {
+  id: number;
+  org_id: string;
+  company_id?: string | null;
+  created_at: number;
+  currency: string;
+  amount_cents: number;
+  description?: string | null;
+  period_start?: number | null;
+  period_end?: number | null;
+  external_id?: string | null;
 }
 
 export interface UserContext {
@@ -190,6 +204,15 @@ export const api = {
     },
     replyTicket(ticket_id: string, payload: any) {
       return request<Ticket>(`/admin/tickets/${ticket_id}/reply`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    listPayments(company_id: string) {
+      return request<Payment[]>(`/admin/companies/${company_id}/payments`);
+    },
+    addPayment(company_id: string, payload: any) {
+      return request<Payment>(`/admin/companies/${company_id}/payments`, {
         method: "POST",
         body: JSON.stringify(payload),
       });
