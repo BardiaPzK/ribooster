@@ -1023,6 +1023,9 @@ def admin_create_payment(
     end = _license_end(plan, start)
     start = _midnight(start)
     end = _midnight(end)
+    # keep the longest coverage if existing end is later
+    if comp.license_current_period_end and comp.license_current_period_end > end:
+        end = comp.license_current_period_end
     pay = DBPayment(
         org_id=comp.org_id,
         company_id=company_id,
