@@ -58,6 +58,7 @@ from .db import (
     DBBackupJob,
     DBPayment,
     DBUserLog,
+    DBTextSqlLog,
     seed_default_org_company,
 )
 
@@ -351,6 +352,11 @@ def _company_from_db(db_company: DBCompany) -> Company:
     )
 
 
+def _username_from_user_id(uid: str) -> str:
+    if not uid:
+        return ""
+    parts = str(uid).split(":")
+    return parts[-1] if parts else uid
 
 
 def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
@@ -490,7 +496,10 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
     if company.allowed_users:
         allowed = [u.lower() for u in company.allowed_users]
         if username.lower() not in allowed:
-            raise HTTPException(status=403, detail="User is not allowed for this company code")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User is not allowed for this company code",
+            )
 
 
 
@@ -898,6 +907,9 @@ class TicketOut(BaseModel):
     org_id: str
     company_id: str
     user_id: str
+    org_name: Optional[str] = None
+    company_code: Optional[str] = None
+    username: Optional[str] = None
     subject: str
     priority: str
     status: str
@@ -978,6 +990,9 @@ def user_create_ticket(
         org_id=t.org_id,
         company_id=t.company_id,
         user_id=t.user_id,
+        org_name=None,
+        company_code=None,
+        username=_username_from_user_id(t.user_id),
         subject=t.subject,
         priority=t.priority,
         status=t.status,
@@ -1014,6 +1029,9 @@ def user_get_ticket(ticket_id: str, ctx: SessionCtx = Depends(require_org_user),
         org_id=t.org_id,
         company_id=t.company_id,
         user_id=t.user_id,
+        org_name=None,
+        company_code=None,
+        username=_username_from_user_id(t.user_id),
         subject=t.subject,
         priority=t.priority,
         status=t.status,
@@ -1062,6 +1080,14 @@ def user_reply_ticket(
     db.add(m)
     db.commit()
 
+    org_name = None
+    company_code = None
+    try:
+        org_name = db.query(DBOrganization.name).filter(DBOrganization.org_id == t.org_id).scalar()
+        company_code = db.query(DBCompany.code).filter(DBCompany.company_id == t.company_id).scalar()
+    except Exception:
+        pass
+
     msgs = (
         db.query(DBTicketMessage)
         .filter(DBTicketMessage.ticket_id == ticket_id)
@@ -1076,6 +1102,9 @@ def user_reply_ticket(
         org_id=t.org_id,
         company_id=t.company_id,
         user_id=t.user_id,
+        org_name=None,
+        company_code=None,
+        username=_username_from_user_id(t.user_id),
         subject=t.subject,
         priority=t.priority,
         status=t.status,
@@ -1102,6 +1131,9 @@ class AdminTicketUpdateRequest(BaseModel):
 @app.get("/api/admin/tickets", response_model=List[TicketOut])
 def admin_list_tickets(ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
     tickets = db.query(DBTicket).order_by(DBTicket.updated_at.desc()).all()
+    # Preload org/company names for display
+    org_map = {o.org_id: o.name for o in db.query(DBOrganization).all()}
+    company_map = {c.company_id: c.code for c in db.query(DBCompany).all()}
     out: List[TicketOut] = []
     for t in tickets:
         msgs = (
@@ -1116,6 +1148,9 @@ def admin_list_tickets(ctx: SessionCtx = Depends(require_admin), db: SASession =
                 org_id=t.org_id,
                 company_id=t.company_id,
                 user_id=t.user_id,
+                org_name=org_map.get(t.org_id),
+                company_code=company_map.get(t.company_id),
+                username=_username_from_user_id(t.user_id),
                 subject=t.subject,
                 priority=t.priority,
                 status=t.status,
@@ -1180,6 +1215,9 @@ def admin_reply_ticket(
         org_id=t.org_id,
         company_id=t.company_id,
         user_id=t.user_id,
+        org_name=org_name,
+        company_code=company_code,
+        username=_username_from_user_id(t.user_id),
         subject=t.subject,
         priority=t.priority,
         status=t.status,
@@ -1554,6 +1592,10 @@ Return ONLY SQL, no explanation.
         f"PWD={body.db_password};"
     )
 
+    rows = []
+    columns = []
+    error_text = None
+
     try:
         import pyodbc
         conn = pyodbc.connect(conn_str)
@@ -1566,7 +1608,29 @@ Return ONLY SQL, no explanation.
         cur.close()
         conn.close()
     except Exception as e:
-        return {"sql": generated_sql, "error": str(e)}
+        error_text = str(e)
+
+    # 4. Persist request/response for history
+    now = int(time.time())
+    try:
+        db.add(
+            DBTextSqlLog(
+                org_id=user.org_id,
+                company_id=user.company_id,
+                user_id=user.user_id,
+                question=body.question,
+                generated_sql=generated_sql,
+                error_text=error_text,
+                rows_json=json.dumps(rows) if rows else None,
+                created_at=now,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    if error_text:
+        return {"sql": generated_sql, "error": error_text}
 
     return {
         "sql": generated_sql,

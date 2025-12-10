@@ -52,7 +52,7 @@ const AdminTickets: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
         <div className="md:col-span-1 border border-slate-800 rounded-2xl bg-slate-900/70 max-h-72 overflow-auto">
           {loading ? (
-            <div className="p-3 text-slate-500">Loading…</div>
+            <div className="p-3 text-slate-500">Loading...</div>
           ) : tickets.length === 0 ? (
             <div className="p-3 text-slate-500">No tickets.</div>
           ) : (
@@ -75,6 +75,10 @@ const AdminTickets: React.FC = () => {
                   <div className="text-[10px] text-slate-400">
                     {t.priority.toUpperCase()} • {t.status}
                   </div>
+                  <div className="text-[10px] text-slate-500">
+                    Org: {t.org_name || t.org_id} • Company: {t.company_code || t.company_id} • User:{" "}
+                    {t.username || t.user_id}
+                  </div>
                 </li>
               ))}
             </ul>
@@ -88,7 +92,8 @@ const AdminTickets: React.FC = () => {
                   {current.subject}
                 </div>
                 <div className="text-[10px] text-slate-500">
-                  Ticket #{current.ticket_id}
+                  Ticket #{current.ticket_id} • Org: {current.org_name || current.org_id} • Company:{" "}
+                  {current.company_code || current.company_id} • User: {current.username || current.user_id}
                 </div>
               </div>
               <div className="flex-1 overflow-auto border border-slate-800 rounded-lg p-2 bg-slate-950/60 space-y-1 mb-2">
@@ -133,7 +138,7 @@ const AdminTickets: React.FC = () => {
                 <textarea
                   className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
                   rows={2}
-                  placeholder="Reply to user…"
+                  placeholder="Reply to user..."
                   value={reply}
                   onChange={(e) => setReply(e.target.value)}
                 />

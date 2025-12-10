@@ -157,6 +157,20 @@ class DBHelpdeskMessage(Base):
     conversation = relationship("DBHelpdeskConversation", back_populates="messages")
 
 
+class DBTextSqlLog(Base):
+    __tablename__ = "textsql_logs"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    org_id = Column(String, index=True, nullable=False)
+    company_id = Column(String, index=True, nullable=False)
+    user_id = Column(String, index=True, nullable=False)
+    question = Column(Text, nullable=False)
+    generated_sql = Column(Text, nullable=False)
+    error_text = Column(Text)
+    rows_json = Column(Text)
+    created_at = Column(Integer, nullable=False)
+
+
 class DBSession(Base):
     """Durable backend sessions so tokens survive process restarts."""
 

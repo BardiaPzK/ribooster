@@ -122,6 +122,9 @@ export interface Ticket {
   org_id: string;
   company_id: string;
   user_id: string;
+  org_name?: string | null;
+  company_code?: string | null;
+  username?: string | null;
   subject: string;
   priority: string;
   status: string;
