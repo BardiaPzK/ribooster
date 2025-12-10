@@ -3,7 +3,7 @@
 FastAPI entrypoint for ribooster.
 
 Features:
-- Admin login (companyCode = "Admin", username="admin", password="admin")
+- Admin login (companyCode = "Admin", credentials from env ADMIN_USERNAME/ADMIN_PASSWORD)
 - Org / company management in DB (SQLite by default)
 - Metrics per org (in memory)
 - Org user login via RIB 4.0 (JWT)
@@ -156,9 +156,8 @@ if os.path.isdir(FRONTEND_DIR):
 # ───────────────────────── Auth helpers ─────────────────────────
 
 ADMIN_ACCESS_CODE = "Admin"
-ADMIN_USERS = {
-    "admin": "admin",  # username: password
-}
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 
 DEFAULT_SERVICE_FLAGS = {
     "projects.backup": True,
@@ -459,8 +458,12 @@ def login(payload: LoginRequest, db: SASession = Depends(get_db)):
 
     # ─── Admin login ───────────────────────────────────────
     if company_code.lower() == ADMIN_ACCESS_CODE.lower():
-        expected = ADMIN_USERS.get(username)
-        if not expected or expected != password:
+        if not ADMIN_USERNAME or not ADMIN_PASSWORD:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Admin credentials not configured",
+            )
+        if username != ADMIN_USERNAME or password != ADMIN_PASSWORD:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
         sess = SessionModel(

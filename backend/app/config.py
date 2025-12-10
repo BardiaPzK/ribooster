@@ -24,9 +24,7 @@ class Settings(BaseSettings):
 
     # Admin login
     ADMIN_ACCESS_CODE: str = "Admin"
-    ADMIN_USERS: dict[str, str] = {
-        "admin": "admin",
-    }
+    ADMIN_USERS: dict[str, str] = {}
 
     # Session
     SESSION_TTL_SECONDS: int = 8 * 60 * 60  # 8h
