@@ -24,20 +24,29 @@ import Helpdesk from "./pages/user/Helpdesk";
 // ─────────────────────────────────────────────
 
 function RequireAuth({ children }: { children: JSX.Element }) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center text-slate-500">Loading...</div>
+  );
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
 function RequireAdmin({ children }: { children: JSX.Element }) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center text-slate-500">Loading...</div>
+  );
   if (!user) return <Navigate to="/login" replace />;
   if (!user.is_admin) return <Navigate to="/dashboard" replace />;
   return children;
 }
 
 function RequireUser({ children }: { children: JSX.Element }) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center text-slate-500">Loading...</div>
+  );
   if (!user) return <Navigate to="/login" replace />;
   if (user.is_admin) return <Navigate to="/admin" replace />;
   return children;
