@@ -379,7 +379,7 @@ def _license_end(plan: str, start_ts: int) -> int:
     return start_ts + 14 * 24 * 3600
 
 
-def _payment_from_db(p: DBPayment) -> PaymentOut:
+def _payment_from_db(p: DBPayment) -> "PaymentOut":
     return PaymentOut(
         id=p.id,
         org_id=p.org_id,
