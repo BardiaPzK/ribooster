@@ -5,20 +5,32 @@ import { routes } from "./router";
 import useAuth from "./lib/auth";
 
 const App: React.FC = () => {
-  const { loading, user } = useAuth();
+  const { user, loading } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const element = useRoutes(routes);
 
-  // Redirect authenticated users away from / or /login into their home.
   useEffect(() => {
     if (loading) return;
-    const path = location.pathname;
-    const atLogin = path.endsWith("/login") || path === "/login" || path === "/" || path === "/app" || path === "/app/";
-    if (user && atLogin) {
-      navigate(user.is_admin ? "/admin" : "/user", { replace: true });
+
+    // Strip basename "/app" for checks
+    const rawPath = location.pathname;
+    const path = rawPath.startsWith("/app") ? rawPath.slice("/app".length) || "/" : rawPath || "/";
+    const isLogin = path === "/login" || path === "/";
+    const isAdminPath = path.startsWith("/admin");
+
+    if (!user) {
+      if (!isLogin) navigate("/login", { replace: true });
+      return;
     }
-  }, [loading, user, location.pathname, navigate]);
+
+    if (user.is_admin) {
+      if (!isAdminPath) navigate("/admin", { replace: true });
+    } else {
+      if (isAdminPath) navigate("/user", { replace: true });
+      else if (isLogin || path === "/") navigate("/user", { replace: true });
+    }
+  }, [user, loading, location.pathname, navigate]);
 
   if (loading) {
     return (
