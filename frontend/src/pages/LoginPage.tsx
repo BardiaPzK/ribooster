@@ -14,8 +14,9 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      await login(companyCode, username, password);
-      window.location.href = "/app/";
+      const sess = await login(companyCode, username, password);
+      const dest = sess.is_admin ? "/app/admin" : "/app/user";
+      window.location.href = dest;
     } catch (err: any) {
       console.error(err);
       setError(err.message || "Login failed");
