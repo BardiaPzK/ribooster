@@ -96,7 +96,7 @@ export default function UserDashboard() {
                   ? null
                   : !featureActive
                   ? "This service is an add-on. Please contact support."
-                  : !licenseActive
+                  : !companyLicenseActive
                   ? "Company code license is inactive. Please contact support."
                   : null;
 
