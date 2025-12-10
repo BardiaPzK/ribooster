@@ -17,13 +17,13 @@ const defaultFeatures: Record<string, boolean> = {
 const toDateInput = (ts?: number | null) => {
   if (!ts) return "";
   const d = new Date(ts * 1000);
-  const iso = d.toISOString();
-  return iso.slice(0, 16); // yyyy-MM-ddTHH:mm
+  return d.toISOString().slice(0, 10); // yyyy-MM-dd
 };
 
 const fromDateInput = (v: string) => {
   if (!v) return null;
-  return Math.floor(new Date(v).getTime() / 1000);
+  const dt = new Date(v + "T00:00:00Z");
+  return Math.floor(dt.getTime() / 1000);
 };
 
 const AdminOrgs: React.FC = () => {
@@ -254,6 +254,42 @@ const AdminOrgs: React.FC = () => {
     }
   };
 
+  const deletePayment = async (id: number) => {
+    if (!window.confirm("Delete this payment log?")) return;
+    try {
+      await api.admin.deletePayment(id);
+      await loadPayments(selectedCompanyId);
+      load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to delete payment");
+    }
+  };
+
+  const deleteCompany = async () => {
+    if (!selectedCompany) return;
+    if (!window.confirm("Delete this company and its payments?")) return;
+    try {
+      await api.admin.deleteCompany(selectedCompany.company_id);
+      setSelectedCompanyId(null);
+      load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to delete company");
+    }
+  };
+
+  const deleteOrg = async () => {
+    if (!selectedOrg) return;
+    if (!window.confirm("Delete this organization, its companies, and payments?")) return;
+    try {
+      await api.admin.deleteOrg(selectedOrg.org.org_id);
+      setSelectedOrgId(null);
+      setSelectedCompanyId(null);
+      load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to delete organization");
+    }
+  };
+
   const createOrg = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -302,7 +338,7 @@ const AdminOrgs: React.FC = () => {
       {error && <div className="text-sm text-red-400">{error}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
-        <div className="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/70 p-3 space-y-2">
+        <div className="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/70 p-3 space-y-3">
           <div className="font-medium text-slate-200">Organizations</div>
           {/* Create org */}
           <form className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-2" onSubmit={createOrg}>
@@ -494,17 +530,33 @@ const AdminOrgs: React.FC = () => {
                       {selectedOrg.companies.map((c) => c.code).join(", ")}
                     </div>
                   </div>
-                  <select
-                    className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={selectedCompanyId || selectedCompany.company_id}
-                    onChange={(e) => setSelectedCompanyId(e.target.value)}
-                  >
-                    {selectedOrg.companies.map((c) => (
-                      <option key={c.company_id} value={c.company_id}>
-                        {c.code}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex gap-2">
+                    <select
+                      className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={selectedCompanyId || selectedCompany.company_id}
+                      onChange={(e) => setSelectedCompanyId(e.target.value)}
+                    >
+                      {selectedOrg.companies.map((c) => (
+                        <option key={c.company_id} value={c.company_id}>
+                          {c.code}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={deleteCompany}
+                      className="rounded-lg border border-red-600 text-red-300 px-2 py-1 text-[11px] hover:bg-red-900/30"
+                    >
+                      Delete company
+                    </button>
+                    <button
+                      type="button"
+                      onClick={deleteOrg}
+                      className="rounded-lg border border-red-600 text-red-300 px-2 py-1 text-[11px] hover:bg-red-900/30"
+                    >
+                      Delete org
+                    </button>
+                  </div>
                 </div>
 
                 <form className="grid grid-cols-1 md:grid-cols-2 gap-3" onSubmit={saveSelected}>
@@ -589,7 +641,7 @@ const AdminOrgs: React.FC = () => {
                       <div>
                         <label className="block text-[11px] text-slate-400 mb-0.5">Expiry</label>
                         <input
-                          type="datetime-local"
+                          type="date"
                           className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                           value={editExpiry}
                           onChange={(e) => setEditExpiry(e.target.value)}
@@ -664,17 +716,27 @@ const AdminOrgs: React.FC = () => {
                         {payments.map((p) => (
                           <div
                             key={p.id}
-                            className="rounded-md bg-slate-900 px-2 py-1 text-[11px] text-slate-200 shadow-sm shadow-slate-950/50"
+                            className="rounded-md bg-slate-900 px-2 py-1 text-[11px] text-slate-200 shadow-sm shadow-slate-950/50 flex items-center justify-between gap-2"
                           >
-                            <div className="flex justify-between">
-                              <span>{(p.amount_cents / 100).toFixed(2)} {p.currency}</span>
-                              <span>{new Date((p.period_start || p.created_at) * 1000).toLocaleDateString()}</span>
+                            <div>
+                              <div className="flex justify-between gap-2">
+                                <span>{(p.amount_cents / 100).toFixed(2)} {p.currency}</span>
+                                <span>{new Date((p.period_start || p.created_at) * 1000).toLocaleDateString()}</span>
+                              </div>
+                              <div className="text-slate-400">
+                                Period end: {p.period_end ? new Date(p.period_end * 1000).toLocaleDateString() : "n/a"} •{" "}
+                                Added: {new Date(p.created_at * 1000).toLocaleDateString()} • By: {p.added_by || "admin"} •{" "}
+                                {p.description || "no desc"}
+                              </div>
                             </div>
-                            <div className="text-slate-400">
-                              Period end: {p.period_end ? new Date(p.period_end * 1000).toLocaleDateString() : "n/a"} •{" "}
-                              Added: {new Date(p.created_at * 1000).toLocaleDateString()} • By: {p.added_by || "admin"} •{" "}
-                              {p.description || "no desc"}
-                            </div>
+                            <button
+                              type="button"
+                              onClick={() => deletePayment(p.id)}
+                              className="text-red-400 hover:text-red-300"
+                              title="Delete payment"
+                            >
+                              ✕
+                            </button>
                           </div>
                         ))}
                         {!payments.length && <div className="text-[11px] text-slate-500">No payments logged.</div>}

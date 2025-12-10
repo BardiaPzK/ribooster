@@ -34,7 +34,7 @@ export default function UserDashboard() {
     user?.display_name?.split(" ")[0] || user?.username || ctx?.company?.name?.split(" ")[0] || "there";
 
   const features = ctx?.company?.features || {};
-  const licenseActive = ctx?.org?.license?.active !== false;
+  const companyLicenseActive = ctx?.company?.license?.active !== false;
   const cards = [
     {
       key: "tickets",
@@ -90,7 +90,7 @@ export default function UserDashboard() {
           <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
             {cards.map((card) => {
               const featureActive = card.active !== false;
-              const allowed = card.key === "tickets" ? true : featureActive && licenseActive;
+              const allowed = card.key === "tickets" ? true : featureActive && companyLicenseActive;
               const note =
                 card.key === "tickets"
                   ? null

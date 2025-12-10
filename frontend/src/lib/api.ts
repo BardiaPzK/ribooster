@@ -199,6 +199,15 @@ export const api = {
         body: JSON.stringify(payload),
       });
     },
+    deleteCompany(company_id: string) {
+      return request(`/admin/companies/${company_id}`, { method: "DELETE" });
+    },
+    deleteOrg(org_id: string) {
+      return request(`/admin/orgs/${org_id}`, { method: "DELETE" });
+    },
+    deletePayment(payment_id: number) {
+      return request(`/admin/payments/${payment_id}`, { method: "DELETE" });
+    },
     listTickets() {
       return request<Ticket[]>("/admin/tickets");
     },

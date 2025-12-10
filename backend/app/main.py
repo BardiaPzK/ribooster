@@ -345,6 +345,7 @@ def _company_from_db(db_company: DBCompany) -> Company:
     current_period_end = getattr(db_company, "license_current_period_end", None)
     if not current_period_end:
         current_period_end = _license_end(plan, now)
+    current_period_end = _midnight(current_period_end)
     if current_period_end and current_period_end < now:
         active = False
     license = License(plan=plan, active=bool(active), current_period_end=current_period_end)
@@ -377,6 +378,17 @@ def _license_end(plan: str, start_ts: int) -> int:
         return start_ts + 30 * 24 * 3600
     # trial default 14 days
     return start_ts + 14 * 24 * 3600
+
+
+def _midnight(ts: int) -> int:
+    # normalize epoch seconds to 00:00 of that date (UTC)
+    try:
+        import datetime as _dt
+
+        d = _dt.datetime.utcfromtimestamp(ts).date()
+        return int(_dt.datetime(d.year, d.month, d.day, 0, 0).timestamp())
+    except Exception:
+        return ts
 
 
 def _payment_from_db(p: DBPayment) -> "PaymentOut":
@@ -725,6 +737,7 @@ class AdminUpdateCompanyRequest(BaseModel):
     plan: Optional[Literal["trial", "monthly", "yearly"]] = None
     active: Optional[bool] = None
     current_period_end: Optional[int] = None
+    delete_payments: Optional[bool] = None
 
 
 class AdminCreateCompanyRequest(BaseModel):
@@ -737,6 +750,7 @@ class AdminCreateCompanyRequest(BaseModel):
     plan: Literal["trial", "monthly", "yearly"] = "trial"
     current_period_end: Optional[int] = None
     active: bool = True
+    delete_payments: Optional[bool] = None
 
 
 class AdminPaymentRequest(BaseModel):
@@ -745,6 +759,7 @@ class AdminPaymentRequest(BaseModel):
     amount_cents: int = 0
     currency: str = "EUR"
     description: Optional[str] = None
+    added_by: Optional[str] = None
 
 
 class PaymentOut(BaseModel):
@@ -814,6 +829,7 @@ def admin_create_org(
 
     plan = payload.company_plan or "trial"
     default_end = _license_end(plan, payload.company_current_period_end or now)
+    default_end = _midnight(default_end)
 
     allowed = payload.allowed_users or []
     c = DBCompany(
@@ -857,7 +873,7 @@ def admin_create_company(
     now = int(time.time())
     company_id = f"comp_{uuid.uuid4().hex[:10]}"
     plan = payload.plan or "trial"
-    end_ts = payload.current_period_end or _license_end(plan, now)
+    end_ts = _midnight(payload.current_period_end) if payload.current_period_end else _license_end(plan, now)
     c = DBCompany(
         company_id=company_id,
         org_id=org_id,
@@ -948,11 +964,37 @@ def admin_update_company(
     if payload.active is not None:
         c.license_active = payload.active
     if payload.current_period_end is not None:
-        c.license_current_period_end = payload.current_period_end
+        c.license_current_period_end = _midnight(payload.current_period_end)
+    if payload.delete_payments:
+        db.query(DBPayment).filter(DBPayment.company_id == company_id).delete()
 
     db.commit()
     db.refresh(c)
     return _company_from_db(c)
+
+
+@app.delete("/api/admin/orgs/{org_id}", response_model=Dict[str, str])
+def admin_delete_org(org_id: str, ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
+    org = db.query(DBOrganization).filter(DBOrganization.org_id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
+    company_ids = [c.company_id for c in db.query(DBCompany).filter(DBCompany.org_id == org_id).all()]
+    if company_ids:
+        db.query(DBPayment).filter(DBPayment.company_id.in_(company_ids)).delete(synchronize_session=False)
+    db.delete(org)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.delete("/api/admin/companies/{company_id}", response_model=Dict[str, str])
+def admin_delete_company(company_id: str, ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
+    comp = db.query(DBCompany).filter(DBCompany.company_id == company_id).first()
+    if not comp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    db.query(DBPayment).filter(DBPayment.company_id == company_id).delete(synchronize_session=False)
+    db.delete(comp)
+    db.commit()
+    return {"status": "deleted"}
 
 
 @app.get("/api/admin/companies/{company_id}/payments", response_model=List[PaymentOut])
@@ -979,6 +1021,8 @@ def admin_create_payment(
     start = payload.payment_date
     plan = payload.plan or getattr(comp, "license_plan", None) or "monthly"
     end = _license_end(plan, start)
+    start = _midnight(start)
+    end = _midnight(end)
     pay = DBPayment(
         org_id=comp.org_id,
         company_id=company_id,
@@ -999,6 +1043,20 @@ def admin_create_payment(
     db.commit()
     db.refresh(pay)
     return _payment_from_db(pay)
+
+
+@app.delete("/api/admin/payments/{payment_id}", response_model=Dict[str, str])
+def admin_delete_payment(
+    payment_id: int,
+    ctx: SessionCtx = Depends(require_admin),
+    db: SASession = Depends(get_db),
+):
+    p = db.query(DBPayment).filter(DBPayment.id == payment_id).first()
+    if not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    db.delete(p)
+    db.commit()
+    return {"status": "deleted"}
 
 
 # ───────────────────────── Admin: Metrics ─────────────────────────
