@@ -630,7 +630,7 @@ const AdminOrgs: React.FC = () => {
 
                     <div className="border-t border-slate-800 pt-2 space-y-2">
                       <div className="text-[11px] font-medium text-slate-300">Payments</div>
-                      <form className="grid grid-cols-2 gap-2" onSubmit={addPayment}>
+                      <div className="grid grid-cols-2 gap-2">
                         <input
                           type="date"
                           className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
@@ -652,12 +652,13 @@ const AdminOrgs: React.FC = () => {
                           onChange={(e) => setPayDesc(e.target.value)}
                         />
                         <button
-                          type="submit"
+                          type="button"
+                          onClick={addPayment}
                           className="col-span-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs px-3 py-1.5"
                         >
                           Add payment & update license
                         </button>
-                      </form>
+                      </div>
                       <div className="max-h-36 overflow-auto space-y-1 rounded-lg border border-slate-800 bg-slate-950 p-2">
                         {payments.map((p) => (
                           <div
