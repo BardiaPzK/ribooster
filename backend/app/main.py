@@ -678,7 +678,7 @@ def admin_list_orgs(ctx: SessionCtx = Depends(require_admin), db: SASession = De
         )
         org = _org_from_db(org_row)
         comps = [_company_from_db(c) for c in companies]
-        metrics = storage.METRICS.get(org.org_id)
+        metrics = storage.get_metrics(org.org_id)
         out.append(
             OrgListItem(
                 org=org,
@@ -738,7 +738,7 @@ def admin_create_org(
 
     org = _org_from_db(o)
     company = _company_from_db(c)
-    metrics = storage.METRICS.get(org.org_id)
+    metrics = storage.get_metrics(org.org_id)
     return OrgListItem(org=org, company=company, companies=[company], metrics=metrics)
 
 
@@ -864,7 +864,7 @@ def admin_metrics_overview(ctx: SessionCtx = Depends(require_admin), db: SASessi
     out: List[MetricsOverviewItem] = []
     for o in org_rows:
         org = _org_from_db(o)
-        mc = storage.METRICS.get(org.org_id, MetricCounters())
+        mc = storage.get_metrics(org.org_id)
         out.append(
             MetricsOverviewItem(
                 org_id=org.org_id,

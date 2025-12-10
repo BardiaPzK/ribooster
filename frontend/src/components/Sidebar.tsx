@@ -5,23 +5,31 @@ import { NavLink, useLocation } from "react-router-dom";
 type SidebarProps = {
   onLogout?: () => void;
   isAdmin?: boolean;
+  features?: Record<string, boolean>;
+  licenseActive?: boolean;
 };
 
-const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin }) => {
+const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin, features = {}, licenseActive = true }) => {
   const location = useLocation();
 
   // NOTE: these are router paths, BrowserRouter has basename="/app"
   const userLinks = [
     { to: "/user", label: "Overview" },
     { to: "/user/tickets", label: "Support Tickets" },
-    { to: "/user/backup", label: "Project Backup" },
-    { to: "/user/helpdesk", label: "RIB Helpdesk" },
-    { to: "/user/text-sql", label: "Text to SQL" },
+    { to: "/user/backup", label: "Project Backup", featureKey: "projects.backup" },
+    { to: "/user/helpdesk", label: "RIB Helpdesk", featureKey: "ai.helpdesk" },
+    { to: "/user/text-sql", label: "Text to SQL", featureKey: "textsql" },
   ];
 
   const current = location.pathname.replace("/app", "") || "/";
 
   const isActive = (path: string) => current === path;
+
+  const isAllowed = (link: (typeof userLinks)[number]) => {
+    if (!link.featureKey) return true;
+    const featureEnabled = features[link.featureKey] !== false;
+    return featureEnabled && licenseActive;
+  };
 
   return (
     <aside className="w-64 min-h-screen bg-slate-900 text-slate-100 flex flex-col">
@@ -34,19 +42,34 @@ const Sidebar: React.FC<SidebarProps> = ({ onLogout, isAdmin }) => {
 
       {!isAdmin && (
         <nav className="flex-1 px-2 py-4 space-y-1">
-          {userLinks.map((link) => (
-            <NavLink
-              key={link.to}
-              to={link.to}
-              className={`block px-3 py-2 rounded-md text-sm ${
-                isActive(link.to)
-                  ? "bg-slate-800 text-white"
-                  : "text-slate-300 hover:bg-slate-800 hover:text-white"
-              }`}
-            >
-              {link.label}
-            </NavLink>
-          ))}
+          {userLinks.map((link) => {
+            const allowed = isAllowed(link);
+            return (
+              <NavLink
+                key={link.to}
+                to={link.to}
+                onClick={(e) => {
+                  if (!allowed) e.preventDefault();
+                }}
+                className={`block px-3 py-2 rounded-md text-sm ${
+                  allowed
+                    ? isActive(link.to)
+                      ? "bg-slate-800 text-white"
+                      : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    : "text-slate-500 cursor-not-allowed opacity-60"
+                }`}
+                aria-disabled={!allowed}
+                tabIndex={allowed ? 0 : -1}
+              >
+                <span>{link.label}</span>
+                {!allowed && (
+                  <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-300">
+                    Add-on disabled
+                  </span>
+                )}
+              </NavLink>
+            );
+          })}
         </nav>
       )}
 

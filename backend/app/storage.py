@@ -1,11 +1,8 @@
 import json
-from typing import Dict, Optional
+from typing import Optional, Dict
 
 from .models import Session as SessionModel, MetricCounters, RIBSession
-from .db import SessionLocal, DBSession
-
-# In-memory metrics per org
-METRICS: Dict[str, MetricCounters] = {}
+from .db import SessionLocal, DBSession, DBMetricCounter
 
 
 def _session_to_db(sess: SessionModel) -> DBSession:
@@ -84,19 +81,69 @@ def delete_session(token: str) -> None:
 
 
 def record_request(org_id: str, endpoint: str, feature: str | None = None) -> None:
-    """
-    Record a generic backend request for metrics.
-    Endpoint name is currently not stored, but feature counts are.
-    """
-    mc = METRICS.setdefault(org_id, MetricCounters())
-    mc.total_requests += 1
-    if feature:
-        mc.per_feature[feature] = mc.per_feature.get(feature, 0) + 1
+    """Persist a generic backend request for metrics."""
+    db = SessionLocal()
+    try:
+        mc = db.query(DBMetricCounter).filter(DBMetricCounter.org_id == org_id).first()
+        if not mc:
+            mc = DBMetricCounter(org_id=org_id, total_requests=0, total_rib_calls=0, per_feature_json="{}")
+            db.add(mc)
+            db.flush()
+
+        mc.total_requests = (mc.total_requests or 0) + 1
+
+        # update per-feature counters
+        per_feature: Dict[str, int] = {}
+        if mc.per_feature_json:
+            try:
+                per_feature = json.loads(mc.per_feature_json) or {}
+            except Exception:
+                per_feature = {}
+
+        if feature:
+            per_feature[feature] = per_feature.get(feature, 0) + 1
+
+        mc.per_feature_json = json.dumps(per_feature)
+        db.commit()
+    finally:
+        db.close()
 
 
 def record_rib_call(org_id: str, endpoint: str) -> None:
-    """
-    Record that we called the RIB Web API on behalf of an org.
-    """
-    mc = METRICS.setdefault(org_id, MetricCounters())
-    mc.total_rib_calls += 1
+    """Persist that we called the RIB Web API on behalf of an org."""
+    db = SessionLocal()
+    try:
+        mc = db.query(DBMetricCounter).filter(DBMetricCounter.org_id == org_id).first()
+        if not mc:
+            mc = DBMetricCounter(org_id=org_id, total_requests=0, total_rib_calls=0, per_feature_json="{}")
+            db.add(mc)
+            db.flush()
+
+        mc.total_rib_calls = (mc.total_rib_calls or 0) + 1
+        db.commit()
+    finally:
+        db.close()
+
+
+def get_metrics(org_id: str) -> MetricCounters:
+    """Return persisted metrics for an org (defaults to zeroes)."""
+    db = SessionLocal()
+    try:
+        mc = db.query(DBMetricCounter).filter(DBMetricCounter.org_id == org_id).first()
+        if not mc:
+            return MetricCounters()
+
+        per_feature: Dict[str, int] = {}
+        if mc.per_feature_json:
+            try:
+                per_feature = json.loads(mc.per_feature_json) or {}
+            except Exception:
+                per_feature = {}
+
+        return MetricCounters(
+            total_requests=mc.total_requests or 0,
+            total_rib_calls=mc.total_rib_calls or 0,
+            per_feature=per_feature,
+        )
+    finally:
+        db.close()

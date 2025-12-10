@@ -174,6 +174,15 @@ class DBSession(Base):
     rib_session_json = Column(Text)
 
 
+class DBMetricCounter(Base):
+    __tablename__ = "metrics_counters"
+
+    org_id = Column(String, primary_key=True, index=True)
+    total_requests = Column(Integer, default=0)
+    total_rib_calls = Column(Integer, default=0)
+    per_feature_json = Column(Text, default="{}")
+
+
 class DBBackupJob(Base):
     __tablename__ = "backup_jobs"
 
