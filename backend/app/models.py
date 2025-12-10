@@ -28,7 +28,7 @@ class Company(BaseModel):
     company_id: str
     org_id: str
     name: str
-    code: str  # company code used for login (e.g. "TNG-100")
+    code: str  # company code used for login
     base_url: str  # RIB host URL
     rib_company_code: str  # RIB company code (e.g. "999")
     allowed_users: List[str] = Field(default_factory=list)

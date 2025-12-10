@@ -258,53 +258,5 @@ def init_db() -> None:
 
 
 def seed_default_org_company(db: Session) -> None:
-    from sqlalchemy import select
-
-    # if there is already at least 1 org, do nothing
-    exists = db.execute(select(DBOrganization.org_id)).first()
-    if exists:
-        return
-
-    now = int(time.time())
-    org_id = "org_tng_100"
-    company_id = "comp_tng_100"
-
-    features = {
-        "projects.backup": True,
-        "ai.helpdesk": True,
-        "textsql": True,
-    }
-
-    org = DBOrganization(
-        org_id=org_id,
-        name="TenneT Test Org (TNG-100)",
-        contact_email="admin@example.com",
-        contact_phone=None,
-        notes=None,
-        license_plan="monthly",
-        license_active=True,
-        license_current_period_end=now + 365 * 24 * 3600,
-        features_json=json.dumps(features),
-    )
-
-    base_url = os.environ.get(
-        "TNG100_RIB_HOST",
-        "https://tng-linkdigital.rib40.cloud/itwo40/services",
-    )
-    rib_company_code = os.environ.get("TNG100_RIB_COMPANY", "1000")
-
-    comp = DBCompany(
-        company_id=company_id,
-        org_id=org_id,
-        name="TNG-100",
-        code="TNG-100",
-        base_url=base_url,
-        rib_company_code=rib_company_code,
-        allowed_users_json=json.dumps([]),
-        ai_api_key=None,
-        features_json=json.dumps(features),
-    )
-
-    db.add(org)
-    db.add(comp)
-    db.commit()
+    # No default seed data; orgs/companies must be created via admin APIs.
+    return

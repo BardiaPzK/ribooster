@@ -1,7 +1,7 @@
 # backend/app/config.py
 """
-Simple config + default seed data.
-You can edit DEFAULT_ORGS and DEFAULT_COMPANIES directly here.
+Simple config.
+Organizations/companies are managed in the database; no built-in seed data.
 """
 
 from __future__ import annotations
@@ -36,45 +36,6 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-# ---- Default seed data (editable) ----
-
-# Organizations (per customer)
-# org_id must be unique; access_code is what user types in login "Company Code" field.
-DEFAULT_ORGS = [
-    {
-        "org_id": "org_tng",
-        "name": "TransnetBW Sample",
-        "access_code": "TNG-100",
-        "contact_email": "admin@tng-sample.local",
-        "contact_phone": "",
-        "notes": "Sample organization; you can edit this in config.py.",
-        "deactivated": False,
-        "created_by": "system",
-        "created_at": 1710000000,
-        "license": {
-            "plan": "monthly",
-            "active": True,
-            "current_period_end": 1893456000,  # 2030-01-01
-        },
-        "features": [
-            "projects.backup",
-            "ai.helpdesk",
-        ],
-        "last_login_ts": None,
-    }
-]
-
-# Companies (mapping access_code -> RIB base_url + company_code)
-# For now: 1 company per org. You can add more later if needed.
-DEFAULT_COMPANIES = [
-    {
-        "company_id": "cmp_tng_1",
-        "org_id": "org_tng",
-        "code": "TNG-100",  # must match Org.access_code
-        "base_url": "https://tng-linkdigital.rib40.cloud/itwo40/services",
-        "rib_company_code": "1000",
-        "allowed_users": [
-            "API", "Bardia.pazoki@julius-berger.com",
-        ],
-    }
-]
+# ---- Default seed data (none; data comes from the database) ----
+DEFAULT_ORGS: list[dict] = []
+DEFAULT_COMPANIES: list[dict] = []
