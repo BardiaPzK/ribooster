@@ -746,6 +746,19 @@ class AdminPaymentRequest(BaseModel):
     description: Optional[str] = None
 
 
+class PaymentOut(BaseModel):
+    id: int
+    org_id: str
+    company_id: Optional[str] = None
+    created_at: int
+    currency: str
+    amount_cents: int
+    description: Optional[str] = None
+    period_start: Optional[int] = None
+    period_end: Optional[int] = None
+    external_id: Optional[str] = None
+
+
 @app.get("/api/admin/orgs", response_model=List[OrgListItem])
 def admin_list_orgs(ctx: SessionCtx = Depends(require_admin), db: SASession = Depends(get_db)):
     out: List[OrgListItem] = []
@@ -1052,19 +1065,6 @@ class TicketListItem(BaseModel):
     status: str
     created_at: int
     updated_at: int
-
-
-class PaymentOut(BaseModel):
-    id: int
-    org_id: str
-    company_id: Optional[str] = None
-    created_at: int
-    currency: str
-    amount_cents: int
-    description: Optional[str] = None
-    period_start: Optional[int] = None
-    period_end: Optional[int] = None
-    external_id: Optional[str] = None
 
 
 @app.get("/api/user/tickets", response_model=List[TicketListItem])
