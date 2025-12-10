@@ -1201,6 +1201,14 @@ def admin_reply_ticket(
 
     db.commit()
 
+    org_name = None
+    company_code = None
+    try:
+        org_name = db.query(DBOrganization.name).filter(DBOrganization.org_id == t.org_id).scalar()
+        company_code = db.query(DBCompany.code).filter(DBCompany.company_id == t.company_id).scalar()
+    except Exception:
+        pass
+
     msgs = (
         db.query(DBTicketMessage)
         .filter(DBTicketMessage.ticket_id == ticket_id)
