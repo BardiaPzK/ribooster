@@ -55,7 +55,6 @@ const AdminOrgs: React.FC = () => {
   // payments
   const [payments, setPayments] = useState<Payment[]>([]);
   const [payDate, setPayDate] = useState("");
-  const [payPlan, setPayPlan] = useState<"monthly" | "yearly">("monthly");
   const [payAmount, setPayAmount] = useState<number>(0);
   const [payDesc, setPayDesc] = useState("");
 
@@ -240,16 +239,16 @@ const AdminOrgs: React.FC = () => {
     if (!selectedCompany) return;
     setError(null);
     try {
+      const midnight = payDate ? new Date(payDate + "T00:00:00") : new Date();
       await api.admin.addPayment(selectedCompany.company_id, {
-        payment_date: fromDateInput(payDate) || Math.floor(Date.now() / 1000),
-        plan: payPlan,
+        payment_date: Math.floor(midnight.getTime() / 1000),
         amount_cents: payAmount || 0,
-        currency: "EUR",
         description: payDesc || undefined,
       });
       await loadPayments(selectedCompany.company_id);
       load();
       setPayDesc("");
+      setPayAmount(0);
     } catch (e: any) {
       setError(e?.message || "Failed to add payment");
     }
@@ -633,20 +632,12 @@ const AdminOrgs: React.FC = () => {
                       <div className="text-[11px] font-medium text-slate-300">Payments</div>
                       <form className="grid grid-cols-2 gap-2" onSubmit={addPayment}>
                         <input
-                          type="datetime-local"
+                          type="date"
                           className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                           value={payDate}
                           onChange={(e) => setPayDate(e.target.value)}
                           required
                         />
-                        <select
-                          className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                          value={payPlan}
-                          onChange={(e) => setPayPlan(e.target.value as "monthly" | "yearly")}
-                        >
-                          <option value="monthly">monthly</option>
-                          <option value="yearly">yearly</option>
-                        </select>
                         <input
                           type="number"
                           className="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
@@ -667,11 +658,11 @@ const AdminOrgs: React.FC = () => {
                           Add payment & update license
                         </button>
                       </form>
-                      <div className="max-h-32 overflow-auto space-y-1">
+                      <div className="max-h-36 overflow-auto space-y-1 rounded-lg border border-slate-800 bg-slate-950 p-2">
                         {payments.map((p) => (
                           <div
                             key={p.id}
-                            className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-200"
+                            className="rounded-md bg-slate-900 px-2 py-1 text-[11px] text-slate-200 shadow-sm shadow-slate-950/50"
                           >
                             <div className="flex justify-between">
                               <span>{(p.amount_cents / 100).toFixed(2)} {p.currency}</span>

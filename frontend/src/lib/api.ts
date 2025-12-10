@@ -211,7 +211,7 @@ export const api = {
     listPayments(company_id: string) {
       return request<Payment[]>(`/admin/companies/${company_id}/payments`);
     },
-    addPayment(company_id: string, payload: any) {
+    addPayment(company_id: string, payload: { payment_date: number; amount_cents: number; description?: string }) {
       return request<Payment>(`/admin/companies/${company_id}/payments`, {
         method: "POST",
         body: JSON.stringify(payload),

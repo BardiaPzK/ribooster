@@ -739,8 +739,8 @@ class AdminCreateCompanyRequest(BaseModel):
 
 
 class AdminPaymentRequest(BaseModel):
-    payment_date: int  # epoch seconds
-    plan: Literal["monthly", "yearly"] = "monthly"
+    payment_date: int  # epoch seconds (midnight)
+    plan: Optional[Literal["monthly", "yearly", "trial"]] = None
     amount_cents: int = 0
     currency: str = "EUR"
     description: Optional[str] = None
@@ -975,7 +975,8 @@ def admin_create_payment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
     start = payload.payment_date
-    end = _license_end(payload.plan, start)
+    plan = payload.plan or getattr(comp, "license_plan", None) or "monthly"
+    end = _license_end(plan, start)
     pay = DBPayment(
         org_id=comp.org_id,
         company_id=company_id,
@@ -987,7 +988,7 @@ def admin_create_payment(
         period_end=end,
         external_id=None,
     )
-    comp.license_plan = payload.plan
+    comp.license_plan = plan
     comp.license_active = True
     comp.license_current_period_end = end
 
