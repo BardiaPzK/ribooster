@@ -1981,8 +1981,10 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 _set_progress(db, job, 20)
             except Exception as e:
                 _append_backup_log(db, job, f"Failed fetching estimate headers: {_friendly_rib_error(e)}")
-                _set_job_status(db, job, "failed")
-                return
+                headers = []
+                estimates_block["headers"] = []
+                _set_progress(db, job, 20)
+
 
             if headers:
                 li_api = EstimateLineItemApi(auth) if include_lineitems else None
@@ -2065,15 +2067,19 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             try:
                 boq_api = BoqApi(auth)
                 base = boq_api.url
-                url_main = f"{base}?$select=Id,Code,Description&$orderby=Code"
-                url_fallback = f"{base.replace('/2.0', '/1.0')}?$select=Id,Code,Description&$orderby=Code"
-                boq_headers = _paged_fetch([url_main, url_fallback], boq_api.PAGE)
+
+                url_main = f"{base}"
+                boq_headers = _paged_fetch([url_main], boq_api.PAGE)
+
                 boqs_block["headers"] = boq_headers
                 _append_backup_log(db, job, f"Fetched {len(boq_headers)} BOQ headers")
                 storage.record_rib_call(job.org_id, "projects.backup.boq.headers")
                 _set_progress(db, job, 75)
+
             except Exception as e:
                 _append_backup_log(db, job, f"BOQ headers fetch failed: {_friendly_rib_error(e)}")
+
+
             try:
                 boq_items_api = BoqItemApi(auth)
                 base = boq_items_api.url
@@ -2130,12 +2136,37 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
     except Exception as e:
         try:
             if job:
-                _append_backup_log(db, job, f"Backup failed: {_friendly_rib_error(e)}")
-                _set_job_status(db, job, "failed")
+                # Try to build a partial ZIP with whatever already have
+                backup_payload = locals().get("backup_payload") or {
+                    "project": {"id": job.project_id, "name": job.project_name},
+                    "generated_at": int(time.time()),
+                    "options": options if isinstance(options, dict) else {},
+                }
+                estimates_block = locals().get("estimates_block") or {
+                    "headers": [],
+                    "lineitems": {},
+                    "resources": {},
+                    "cost_groups": {},
+                }
+                activities = locals().get("activities") or []
+                boqs_block = locals().get("boqs_block") or {"headers": [], "items": []}
+
+                _append_backup_log(
+                    db,
+                    job,
+                    f"Backup finished with errors, partial ZIP created: {_friendly_rib_error(e)}",
+                )
+
+                # Reuse the helper to actually write the ZIP
+                _finalize_zip(95, backup_payload, estimates_block, activities, boqs_block)
+
+                # Mark as completed so frontend can still offer the download
+                _set_job_status(db, job, "completed")
         except Exception:
             pass
     finally:
         db.close()
+
 
 
 @app.post("/api/user/projects/backup", response_model=BackupJobOut)
