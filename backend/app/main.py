@@ -413,7 +413,7 @@ def _ts_label(ts: int) -> str:
     try:
         import datetime as _dt
 
-        return _dt.datetime.utcfromtimestamp(ts).strftime("%Y%m%d_%H%M%S")
+        return _dt.datetime.utcfromtimestamp(ts).strftime("%Y%m%d_%H%M")
     except Exception:
         return str(ts)
 
@@ -1866,33 +1866,34 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("meta.json", json.dumps(payload, ensure_ascii=False, indent=2))
             zf.writestr(
-                f"estimates/{fname('EstimateHeaders')}",
+                fname("EstimateHeaders"),
                 json.dumps(estimates.get("headers", []), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"estimates/{fname('LineItems')}",
+                fname("LineItems"),
                 json.dumps(estimates.get("lineitems", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"estimates/{fname('Resources')}",
+                fname("Resources"),
                 json.dumps(estimates.get("resources", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"estimates/{fname('CostGroups')}",
+                fname("CostGroups"),
                 json.dumps(estimates.get("cost_groups", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"activities/{fname('Activities')}",
+                fname("Activities"),
                 json.dumps(activities, ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"boq/{fname('BoqHeaders')}",
+                fname("BoqHeaders"),
                 json.dumps(boqs.get("headers", []), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"boq/{fname('BoqItems')}",
+                fname("BoqItems"),
                 json.dumps(boqs.get("items", []), ensure_ascii=False, indent=2),
             )
+
         _merge_job_options(job, {"progress": partial_progress, "file_path": zip_path})
 
     def _get_with_fallback(urls: List[str], auth_obj: Auth) -> List[dict]:
@@ -2086,10 +2087,37 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 boq_headers: List[dict] = []
 
                 for hid in sorted(used_boq_header_ids):
-                    # Filter by BoqHeaderId so we don't fetch headers for other projects
-                    url = f"{base}?$filter=BoqHeaderId eq {hid}"
-                    hdr_chunk = _paged_fetch([url], boq_api.PAGE)
+                    # 1) Try BoqHeaderId eq <hid> on 2.0 and 1.0
+                    flt = f"BoqHeaderId eq {hid}"
+                    url_main = f"{base}?$filter={flt}"
+                    url_fallback = f"{base.replace('/2.0', '/1.0')}?$filter={flt}"
+                    hdr_chunk = _paged_fetch([url_main, url_fallback], boq_api.PAGE)
+
+                    # 2) If nothing, try Id eq <hid> on 2.0 and 1.0
+                    if not hdr_chunk:
+                        flt2 = f"Id eq {hid}"
+                        url_main2 = f"{base}?$filter={flt2}"
+                        url_fallback2 = f"{base.replace('/2.0', '/1.0')}?$filter={flt2}"
+                        hdr_chunk = _paged_fetch([url_main2, url_fallback2], boq_api.PAGE)
+
                     boq_headers.extend(hdr_chunk)
+
+                # 3) tng54-style fallback: fetch all headers once and filter client-side
+                if not boq_headers:
+                    all_headers = boq_api.headers()
+                    index: dict[int, dict] = {}
+                    for h in all_headers:
+                        raw_id = h.get("Id") or h.get("BoqHeaderId")
+                        if raw_id is None:
+                            continue
+                        try:
+                            index[int(raw_id)] = h
+                        except (TypeError, ValueError):
+                            continue
+                    for hid in sorted(used_boq_header_ids):
+                        h = index.get(hid)
+                        if h:
+                            boq_headers.append(h)
 
                 boqs_block["headers"] = boq_headers
                 _append_backup_log(
@@ -2102,6 +2130,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 _set_progress(db, job, 75)
             except Exception as e:
                 _append_backup_log(db, job, f"BOQ headers fetch failed: {_friendly_rib_error(e)}")
+
 
             # --- BOQ items: only those belonging to the same BOQ headers ---
             try:
@@ -2147,30 +2176,34 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("meta.json", json.dumps(backup_payload, ensure_ascii=False, indent=2))
             zf.writestr(
-                f"estimates/{fname('EstimateHeaders')}",
+                fname("EstimateHeaders"),
                 json.dumps(estimates_block.get("headers", []), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"estimates/{fname('LineItems')}",
+                fname("LineItems"),
                 json.dumps(estimates_block.get("lineitems", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"estimates/{fname('Resources')}",
+                fname("Resources"),
                 json.dumps(estimates_block.get("resources", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"estimates/{fname('CostGroups')}",
+                fname("CostGroups"),
                 json.dumps(estimates_block.get("cost_groups", {}), ensure_ascii=False, indent=2),
             )
-            zf.writestr(f"activities/{fname('Activities')}", json.dumps(activities, ensure_ascii=False, indent=2))
             zf.writestr(
-                f"boq/{fname('BoqHeaders')}",
+                fname("Activities"),
+                json.dumps(activities, ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                fname("BoqHeaders"),
                 json.dumps(boqs_block.get("headers", []), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                f"boq/{fname('BoqItems')}",
+                fname("BoqItems"),
                 json.dumps(boqs_block.get("items", []), ensure_ascii=False, indent=2),
             )
+
 
         _merge_job_options(job, {**options, "file_path": zip_path})
         _set_progress(db, job, 100)
