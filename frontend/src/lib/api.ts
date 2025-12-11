@@ -279,5 +279,20 @@ export const api = {
     getBackup(id: string) {
       return request(`/user/projects/backup/${id}`);
     },
+    async downloadBackup(id: string): Promise<Blob> {
+      const token = getAuthToken();
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE}/user/projects/backup/${id}/file`, { headers });
+      if (!res.ok) {
+        try {
+          const data = await res.json();
+          throw new Error(data?.detail || `HTTP ${res.status}`);
+        } catch {
+          const text = await res.text();
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+      }
+      return res.blob();
+    },
   },
 };

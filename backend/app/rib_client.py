@@ -1,8 +1,5 @@
 """
-backend/app/rib_client.py
-
-RIB 4.0 client using the STABLE login endpoint:
-    POST /basics/api/2.0/logon   ← this works on all RIB cloud systems
+Lightweight RIB 4.0 client helpers.
 """
 
 from __future__ import annotations
@@ -18,19 +15,25 @@ import requests
 from .models import RIBSession
 
 
-# ───────────────────────── Config ─────────────────────────
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class AuthCfg:
-    host: str        # e.g. "https://tng-linkdigital.rib40.cloud/itwo40/services"
-    company: str     # e.g. "TNG-100"
+    host: str  # e.g. "https://tng-linkdigital.rib40.cloud/itwo40/services"
+    company: str  # e.g. "TNG-100"
 
 
-# ───────────────────────── Auth ─────────────────────────
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
 
 class Auth:
     """
-    RIB authentication using legacy but reliable endpoint:
+    RIB authentication using the stable endpoint:
         POST /basics/api/2.0/logon
     """
 
@@ -51,7 +54,6 @@ class Auth:
             - exp time
         """
 
-        # 1) JWT LOGIN
         url = f"{self.cfg.host}/basics/api/2.0/logon"
         payload = {"username": username, "password": password}
 
@@ -70,10 +72,10 @@ class Auth:
 
         self.token = jwt_token
 
-        # 2) secureClientRolePart
+        # secureClientRolePart
         self.role = self._fetch_role()
 
-        # 3) expiry
+        # expiry
         self.exp_ts = self._decode_exp(jwt_token)
 
         return RIBSession(
@@ -85,7 +87,7 @@ class Auth:
             username=username,
         )
 
-    # ───────── role lookup ─────────
+    # -- role lookup --------------------------------------------------------
 
     def _fetch_role(self) -> str:
         url = (
@@ -106,7 +108,7 @@ class Auth:
 
         return part
 
-    # ───────── headers for authenticated calls ─────────
+    # -- headers for authenticated calls -----------------------------------
 
     def hdr(self) -> Dict[str, str]:
         ctx = {
@@ -122,7 +124,7 @@ class Auth:
             "Content-Type": "application/json",
         }
 
-    # ───────── JWT decoding ─────────
+    # -- JWT decoding -------------------------------------------------------
 
     @staticmethod
     def _decode_exp(jwt_token: str) -> int:
@@ -134,7 +136,10 @@ class Auth:
             return int(time.time()) + 3600  # fallback 1h
 
 
-# ───────────────────────── Project API ─────────────────────────
+# ---------------------------------------------------------------------------
+# Project API
+# ---------------------------------------------------------------------------
+
 
 class ProjectApi:
     def __init__(self, auth: Auth):
@@ -144,7 +149,6 @@ class ProjectApi:
     def all(self) -> List[dict]:
         """
         Fetch all projects (paged) with stable ordering and minimal fields.
-        Mirrors the logic verified in local testing to avoid server errors.
         """
         sess = self.auth.sess
         hdr = self.auth.hdr()
@@ -177,7 +181,189 @@ class ProjectApi:
         return out
 
 
-# ───────────────────────── Session Builder ─────────────────────────
+# ---------------------------------------------------------------------------
+# Estimate / BOQ helpers
+# ---------------------------------------------------------------------------
+
+
+class EstHeaderApi:
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/estimate/publicapi/estimate/header/2.0"
+
+    def by_project(self, prj_id: int) -> List[dict]:
+        rsp = self.auth.sess.get(
+            f"{self.url}?$filter=PrjProjectFk eq {prj_id}",
+            headers=self.auth.hdr(),
+            timeout=60,
+        )
+        rsp.raise_for_status()
+        payload = rsp.json()
+        rows = payload.get("value", payload) if isinstance(payload, dict) else payload
+        return rows if isinstance(rows, list) else []
+
+
+class EstimateLineItemApi:
+    PAGE = 500
+
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/estimate/publicapi/estimate/lineitem/3.0"
+
+    def by_header(self, hdr_id: int) -> List[dict]:
+        sess, hdr = self.auth.sess, self.auth.hdr()
+        out: List[dict] = []
+        skip = 0
+        while True:
+            rsp = sess.get(
+                f"{self.url}?$filter=EstHeaderFk eq {hdr_id}&$skip={skip}&$top={self.PAGE}",
+                headers=hdr,
+                timeout=60,
+            )
+            rsp.raise_for_status()
+            payload = rsp.json()
+            chunk = payload.get("value", payload) if isinstance(payload, dict) else payload
+            if not isinstance(chunk, list):
+                chunk = []
+            out.extend(chunk)
+            if len(chunk) < self.PAGE:
+                break
+            skip += self.PAGE
+        return out
+
+
+class EstimateResourceApi:
+    PAGE = 500
+
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/estimate/publicapi/estimate/resource/1.0"
+
+    def by_header(self, hdr_id: int) -> List[dict]:
+        sess, hdr = self.auth.sess, self.auth.hdr()
+        out: List[dict] = []
+        skip = 0
+        while True:
+            rsp = sess.get(
+                f"{self.url}?$filter=EstHeaderFk eq {hdr_id}&$skip={skip}&$top={self.PAGE}",
+                headers=hdr,
+                timeout=60,
+            )
+            rsp.raise_for_status()
+            payload = rsp.json()
+            chunk = payload.get("value", payload) if isinstance(payload, dict) else payload
+            if not isinstance(chunk, list):
+                chunk = []
+            out.extend(chunk)
+            if len(chunk) < self.PAGE:
+                break
+            skip += self.PAGE
+        return out
+
+
+class LineItem2CostGrpApi:
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/estimate/publicapi/estimate/LineItem2CostGrp/1.0"
+
+    def items(self, hdr_id: int) -> List[dict]:
+        rsp = self.auth.sess.get(
+            f"{self.url}?$filter=EstHeaderFk eq {hdr_id}",
+            headers=self.auth.hdr(),
+            timeout=60,
+        )
+        rsp.raise_for_status()
+        payload = rsp.json()
+        rows = payload.get("value", payload) if isinstance(payload, dict) else payload
+        return rows if isinstance(rows, list) else []
+
+
+class BoqApi:
+    PAGE = 500
+
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/boq/publicapi/header/2.0"
+
+    def headers(self, *, code_like: str | None = None, only_int: bool = False) -> List[dict]:
+        sess, hdr = self.auth.sess, self.auth.hdr()
+        out: List[dict] = []
+        skip = 0
+        while True:
+            url = (
+                f"{self.url}"
+                f"?$select=Id,Code,Description"
+                f"&$orderby=Code"
+                f"&$skip={skip}&$top={self.PAGE}"
+            )
+            rsp = sess.get(url, headers=hdr, timeout=60)
+            rsp.raise_for_status()
+            payload = rsp.json()
+            chunk = payload.get("value", payload) if isinstance(payload, dict) else payload
+            if not isinstance(chunk, list):
+                chunk = []
+            out.extend(chunk)
+            if len(chunk) < self.PAGE:
+                break
+            skip += self.PAGE
+
+        if code_like:
+            out = [x for x in out if code_like in str(x.get("Code", ""))]
+        if only_int:
+            out = [x for x in out if str(x.get("Code", "")).isdigit()]
+
+        return [
+            {"Id": x.get("Id"), "Code": x.get("Code"), "Description": x.get("Description") or ""}
+            for x in out
+        ]
+
+
+class ActivityApi:
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/scheduling/publicapi/activity/2.0"
+
+    def by_project(self, prj_id: int) -> List[dict]:
+        rsp = self.auth.sess.get(
+            f"{self.url}?$filter=ProjectId eq {prj_id}",
+            headers=self.auth.hdr(),
+            timeout=60,
+        )
+        rsp.raise_for_status()
+        payload = rsp.json()
+        rows = payload.get("value", payload) if isinstance(payload, dict) else payload
+        return rows if isinstance(rows, list) else []
+
+
+class BoqItemApi:
+    PAGE = 500
+
+    def __init__(self, auth: Auth):
+        self.auth = auth
+        self.url = f"{auth.cfg.host}/boq/publicapi/structure/2.0"
+
+    def all(self) -> List[dict]:
+        sess, hdr = self.auth.sess, self.auth.hdr()
+        out: List[dict] = []
+        skip, page = 0, self.PAGE
+        while True:
+            rsp = sess.get(f"{self.url}?$skip={skip}&$top={page}", headers=hdr, timeout=60)
+            rsp.raise_for_status()
+            payload = rsp.json()
+            chunk = payload.get("value", payload) if isinstance(payload, dict) else payload
+            if not isinstance(chunk, list):
+                chunk = []
+            out.extend(chunk)
+            if len(chunk) < page:
+                break
+            skip += page
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Session Builder
+# ---------------------------------------------------------------------------
+
 
 def auth_from_rib_session(sess: RIBSession) -> Auth:
     cfg = AuthCfg(host=sess.host, company=sess.company_code)

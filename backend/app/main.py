@@ -19,8 +19,10 @@ Static frontend (Vite build) is served from /app.
 import base64
 import json
 import os
+import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Literal
 
@@ -33,6 +35,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy import select
 
+from .config import DATA_DIR
 from .models import (
     License,
     Organization,
@@ -44,11 +47,22 @@ from .models import (
     HelpdeskMessage,
 )
 from . import storage
-from .rib_client import Auth, AuthCfg, auth_from_rib_session, ProjectApi
+from .rib_client import (
+    Auth,
+    AuthCfg,
+    auth_from_rib_session,
+    ProjectApi,
+    EstHeaderApi,
+    EstimateLineItemApi,
+    EstimateResourceApi,
+    ActivityApi,
+    LineItem2CostGrpApi,
+)
 from .ai_helpdesk import run_helpdesk_completion
 from .db import (
     get_db,
     init_db,
+    SessionLocal,
     DBOrganization,
     DBCompany,
     DBTicket,
@@ -980,7 +994,41 @@ def admin_delete_org(org_id: str, ctx: SessionCtx = Depends(require_admin), db: 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Org not found")
     company_ids = [c.company_id for c in db.query(DBCompany).filter(DBCompany.org_id == org_id).all()]
     if company_ids:
+        # Tickets + messages
+        ticket_ids = [t[0] for t in db.query(DBTicket.ticket_id).filter(DBTicket.company_id.in_(company_ids)).all()]
+        if ticket_ids:
+            db.query(DBTicketMessage).filter(DBTicketMessage.ticket_id.in_(ticket_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(DBTicket).filter(DBTicket.ticket_id.in_(ticket_ids)).delete(synchronize_session=False)
+
+        # Helpdesk conversations + messages
+        conv_ids = [
+            c[0]
+            for c in db.query(DBHelpdeskConversation.conversation_id)
+            .filter(DBHelpdeskConversation.company_id.in_(company_ids))
+            .all()
+        ]
+        if conv_ids:
+            db.query(DBHelpdeskMessage).filter(DBHelpdeskMessage.conversation_id.in_(conv_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(DBHelpdeskConversation).filter(DBHelpdeskConversation.conversation_id.in_(conv_ids)).delete(
+                synchronize_session=False
+            )
+
+        # Backups, payments, textsql logs
+        db.query(DBBackupJob).filter(DBBackupJob.company_id.in_(company_ids)).delete(synchronize_session=False)
         db.query(DBPayment).filter(DBPayment.company_id.in_(company_ids)).delete(synchronize_session=False)
+        db.query(DBTextSqlLog).filter(DBTextSqlLog.company_id.in_(company_ids)).delete(synchronize_session=False)
+
+        # Companies
+        db.query(DBCompany).filter(DBCompany.company_id.in_(company_ids)).delete(synchronize_session=False)
+
+    # Org-level payments and metrics
+    db.query(DBPayment).filter(DBPayment.org_id == org_id).delete(synchronize_session=False)
+    db.query(DBMetricCounter).filter(DBMetricCounter.org_id == org_id).delete(synchronize_session=False)
+
     db.delete(org)
     db.commit()
     return {"status": "deleted"}
@@ -991,7 +1039,32 @@ def admin_delete_company(company_id: str, ctx: SessionCtx = Depends(require_admi
     comp = db.query(DBCompany).filter(DBCompany.company_id == company_id).first()
     if not comp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    ticket_ids = [t[0] for t in db.query(DBTicket.ticket_id).filter(DBTicket.company_id == company_id).all()]
+    if ticket_ids:
+        db.query(DBTicketMessage).filter(DBTicketMessage.ticket_id.in_(ticket_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(DBTicket).filter(DBTicket.ticket_id.in_(ticket_ids)).delete(synchronize_session=False)
+
+    conv_ids = [
+        c[0]
+        for c in db.query(DBHelpdeskConversation.conversation_id)
+        .filter(DBHelpdeskConversation.company_id == company_id)
+        .all()
+    ]
+    if conv_ids:
+        db.query(DBHelpdeskMessage).filter(DBHelpdeskMessage.conversation_id.in_(conv_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(DBHelpdeskConversation).filter(DBHelpdeskConversation.conversation_id.in_(conv_ids)).delete(
+            synchronize_session=False
+        )
+
+    db.query(DBBackupJob).filter(DBBackupJob.company_id == company_id).delete(synchronize_session=False)
     db.query(DBPayment).filter(DBPayment.company_id == company_id).delete(synchronize_session=False)
+    db.query(DBTextSqlLog).filter(DBTextSqlLog.company_id == company_id).delete(synchronize_session=False)
+
     db.delete(comp)
     db.commit()
     return {"status": "deleted"}
@@ -1622,6 +1695,49 @@ async def helpdesk_chat(
 
 # ───────────────────────── Projects & Backup ─────────────────────────
 
+BACKUP_DIR = DATA_DIR / "backups"
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _backup_file_path(job_id: str) -> str:
+    return str(BACKUP_DIR / f"{job_id}.zip")
+
+
+def _merge_job_options(job: DBBackupJob, patch: Dict[str, Any]) -> Dict[str, Any]:
+    options: Dict[str, Any] = {}
+    if job.options_json:
+        try:
+            options = json.loads(job.options_json) or {}
+        except Exception:
+            options = {}
+    options.update(patch)
+    job.options_json = json.dumps(options)
+    return options
+
+
+def _append_backup_log(db: SASession, job: DBBackupJob, message: str) -> List[str]:
+    logs: List[str] = []
+    if job.log_json:
+        try:
+            logs = json.loads(job.log_json) or []
+        except Exception:
+            logs = []
+    ts = time.strftime("%H:%M:%S", time.localtime())
+    logs.append(f"[{ts}] {message}")
+    job.log_json = json.dumps(logs[-400:])
+    job.updated_at = int(time.time())
+    db.commit()
+    db.refresh(job)
+    return logs
+
+
+def _set_job_status(db: SASession, job: DBBackupJob, status: str) -> None:
+    job.status = status
+    job.updated_at = int(time.time())
+    db.commit()
+    db.refresh(job)
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str
@@ -1675,12 +1791,143 @@ class BackupJobOut(BaseModel):
     options: Dict[str, Any]
 
 
+def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) -> None:
+    db = SessionLocal()
+    job: Optional[DBBackupJob] = None
+    try:
+        job = db.query(DBBackupJob).filter(DBBackupJob.job_id == job_id).first()
+        if not job:
+            return
+
+        # Clean up any previous artifact for this job id
+        zip_path = _backup_file_path(job.job_id)
+        try:
+            if os.path.isfile(zip_path):
+                os.remove(zip_path)
+        except Exception:
+            pass
+
+        options = _merge_job_options(job, options or {})
+        _append_backup_log(db, job, f"Starting backup for project {job.project_id} ({job.project_name})")
+        _set_job_status(db, job, "running")
+
+        sess = storage.get_session(session_token)
+        if not sess or not sess.rib_session:
+            _append_backup_log(db, job, "No RIB session found in backend. Please log in again.")
+            _set_job_status(db, job, "failed")
+            return
+
+        auth = auth_from_rib_session(sess.rib_session)
+        project_ref = job.project_id
+        project_filter = int(project_ref) if str(project_ref).isdigit() else project_ref
+
+        include_estimates = bool(options.get("include_estimates", True))
+        include_lineitems = bool(options.get("include_lineitems", True))
+        include_resources = bool(options.get("include_resources", True))
+        include_activities = bool(options.get("include_activities", True))
+
+        backup_payload: Dict[str, Any] = {
+            "project": {"id": job.project_id, "name": job.project_name},
+            "generated_at": int(time.time()),
+            "options": options,
+        }
+
+        estimates_block: Dict[str, Any] = {"headers": [], "lineitems": {}, "resources": {}, "cost_groups": {}}
+
+        if include_estimates:
+            try:
+                headers = EstHeaderApi(auth).by_project(project_filter)  # type: ignore[arg-type]
+                estimates_block["headers"] = headers
+                _append_backup_log(db, job, f"Fetched {len(headers)} estimate headers")
+                storage.record_rib_call(job.org_id, "projects.backup.estimates")
+            except Exception as e:
+                _append_backup_log(db, job, f"Failed fetching estimate headers: {e}")
+                _set_job_status(db, job, "failed")
+                return
+
+            if headers:
+                li_api = EstimateLineItemApi(auth) if include_lineitems else None
+                res_api = EstimateResourceApi(auth) if include_resources else None
+                cg_api = LineItem2CostGrpApi(auth) if include_lineitems else None
+
+                for hdr in headers:
+                    hid = hdr.get("Id") or hdr.get("id") or hdr.get("ID")
+                    if hid is None:
+                        continue
+                    hid_filter = int(hid) if str(hid).isdigit() else hid
+
+                    if li_api:
+                        try:
+                            items = li_api.by_header(hid_filter)  # type: ignore[arg-type]
+                            estimates_block["lineitems"][str(hid)] = items
+                            _append_backup_log(db, job, f"Header {hid}: {len(items)} line items")
+                        except Exception as e:
+                            _append_backup_log(db, job, f"Header {hid}: line item fetch failed ({e})")
+
+                    if cg_api:
+                        try:
+                            cost_groups = cg_api.items(hid_filter)  # type: ignore[arg-type]
+                            estimates_block["cost_groups"][str(hid)] = cost_groups
+                        except Exception:
+                            pass
+
+                    if res_api:
+                        try:
+                            resources = res_api.by_header(hid_filter)  # type: ignore[arg-type]
+                            estimates_block["resources"][str(hid)] = resources
+                            _append_backup_log(db, job, f"Header {hid}: {len(resources)} resources")
+                        except Exception as e:
+                            _append_backup_log(db, job, f"Header {hid}: resource fetch failed ({e})")
+
+        backup_payload["estimates"] = estimates_block
+
+        activities: List[dict] = []
+        if include_activities:
+            try:
+                activities = ActivityApi(auth).by_project(project_filter)  # type: ignore[arg-type]
+                _append_backup_log(db, job, f"Fetched {len(activities)} activities")
+                storage.record_rib_call(job.org_id, "projects.backup.activities")
+            except Exception as e:
+                _append_backup_log(db, job, f"Activities fetch failed: {e}")
+        backup_payload["activities"] = activities
+
+        zip_path = _backup_file_path(job.job_id)
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("meta.json", json.dumps(backup_payload, ensure_ascii=False, indent=2))
+            zf.writestr(
+                "estimates/headers.json",
+                json.dumps(estimates_block.get("headers", []), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                "estimates/lineitems.json",
+                json.dumps(estimates_block.get("lineitems", {}), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                "estimates/resources.json",
+                json.dumps(estimates_block.get("resources", {}), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                "estimates/cost_groups.json",
+                json.dumps(estimates_block.get("cost_groups", {}), ensure_ascii=False, indent=2),
+            )
+            zf.writestr("activities.json", json.dumps(activities, ensure_ascii=False, indent=2))
+
+        _merge_job_options(job, {**options, "file_path": zip_path})
+        _append_backup_log(db, job, "Backup completed. ZIP ready for download.")
+        _set_job_status(db, job, "completed")
+    except Exception as e:
+        try:
+            if job:
+                _append_backup_log(db, job, f"Backup failed: {e}")
+                _set_job_status(db, job, "failed")
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
 @app.post("/api/user/projects/backup", response_model=BackupJobOut)
 def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
-    """
-    For now this just creates a job record and marks it as completed immediately.
-    Later you can replace this with a real async ZIP export.
-    """
     _ensure_feature(ctx, "projects.backup", db)
 
     now = int(time.time())
@@ -1692,7 +1939,7 @@ def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_u
         "include_resources": payload.include_resources,
         "include_activities": payload.include_activities,
     }
-    log = ["Backup job placeholder completed (no real ZIP yet)."]
+    log = ["[00:00:00] Queued backup job"]
 
     job = DBBackupJob(
         job_id=job_id,
@@ -1701,7 +1948,7 @@ def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_u
         user_id=ctx.user_id,
         project_id=payload.project_id,
         project_name=payload.project_name,
-        status="completed",
+        status="pending",
         created_at=now,
         updated_at=now,
         log_json=json.dumps(log),
@@ -1710,6 +1957,13 @@ def start_backup(payload: BackupRequest, ctx: SessionCtx = Depends(require_org_u
     db.add(job)
     db.commit()
     db.refresh(job)
+
+    # Kick off async worker
+    threading.Thread(
+        target=_run_backup_job,
+        args=(job_id, ctx.token, options),
+        daemon=True,
+    ).start()
 
     storage.record_request(ctx.org_id, "projects.backup", feature="projects.backup")
 
@@ -1731,6 +1985,34 @@ def get_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user), db:
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return _backup_from_db(job)
+
+
+@app.get("/api/user/projects/backup/{job_id}/file")
+def download_backup_file(job_id: str, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    job = (
+        db.query(DBBackupJob)
+        .filter(
+            DBBackupJob.job_id == job_id,
+            DBBackupJob.org_id == ctx.org_id,
+            DBBackupJob.company_id == ctx.company_id,
+            DBBackupJob.user_id == ctx.user_id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.status != "completed":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Backup not ready yet")
+
+    path = _backup_file_path(job_id)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backup file missing")
+
+    base_name = job.project_name or f"project_{job.project_id}"
+    safe_name = "".join([c for c in base_name if c.isalnum() or c in (" ", "-", "_")]).strip() or "backup"
+    download_name = f"{safe_name.replace(' ', '_')}_{job_id}.zip"
+
+    return FileResponse(path, filename=download_name, media_type="application/zip")
 
 
 

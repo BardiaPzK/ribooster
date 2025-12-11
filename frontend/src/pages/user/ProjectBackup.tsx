@@ -1,5 +1,5 @@
 // frontend/src/pages/user/ProjectBackup.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Layout from "../../components/Layout";
 import { api } from "../../lib/api";
 
@@ -38,6 +38,9 @@ const ProjectBackup: React.FC = () => {
   const [job, setJob] = useState<BackupJob | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const logsRef = useRef<HTMLDivElement>(null);
 
   const loadProjects = async () => {
     setLoadingProjects(true);
@@ -60,6 +63,34 @@ const ProjectBackup: React.FC = () => {
     loadProjects();
   }, []);
 
+  useEffect(() => {
+    if (!job || job.status === "completed" || job.status === "failed") {
+      setPolling(false);
+      return;
+    }
+    setPolling(true);
+    const handle = setInterval(async () => {
+      try {
+        const fresh = (await api.projects.getBackup(job.job_id)) as BackupJob;
+        setJob(fresh);
+      } catch (e: any) {
+        setJobError(e.message ?? "Failed to refresh job status");
+      }
+    }, 1400);
+    return () => {
+      clearInterval(handle);
+      setPolling(false);
+    };
+  }, [job?.job_id, job?.status]);
+
+  useEffect(() => {
+    if (logsRef.current) {
+      logsRef.current.scrollTop = logsRef.current.scrollHeight;
+    }
+  }, [job?.log]);
+
+  const jobInProgress = !!job && job.status !== "completed" && job.status !== "failed";
+
   const startBackup = async () => {
     if (!selectedProjectId || !selectedProjectName) return;
     setStarting(true);
@@ -78,6 +109,27 @@ const ProjectBackup: React.FC = () => {
       setJobError(e.message ?? "Failed to start backup");
     } finally {
       setStarting(false);
+    }
+  };
+
+  const downloadBackup = async () => {
+    if (!job || job.status !== "completed") return;
+    setDownloading(true);
+    setJobError(null);
+    try {
+      const blob = await api.projects.downloadBackup(job.job_id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `backup_${(job.project_name || job.project_id).replace(/\s+/g, "_")}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setJobError(e.message ?? "Failed to download backup");
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -101,13 +153,11 @@ const ProjectBackup: React.FC = () => {
                 className="text-xs text-indigo-300 hover:text-indigo-200"
                 disabled={loadingProjects}
               >
-                {loadingProjects ? "Refreshing…" : "Refresh"}
+                {loadingProjects ? "Refreshing..." : "Refresh"}
               </button>
             </div>
-            <div className="flex-1 overflow-auto">
-              {loadingProjects && (
-                <div className="p-4 text-xs text-slate-400">Loading…</div>
-              )}
+            <div className="flex-1 overflow-auto max-h-[65vh]">
+              {loadingProjects && <div className="p-4 text-xs text-slate-400">Loading...</div>}
               {!loadingProjects && projectsError && (
                 <div className="p-4 text-xs text-red-300 bg-red-950/40 border-b border-red-900">
                   {projectsError}
@@ -186,10 +236,14 @@ const ProjectBackup: React.FC = () => {
 
               <button
                 onClick={startBackup}
-                disabled={starting || !selectedProjectId}
+                disabled={starting || !selectedProjectId || jobInProgress}
                 className="mt-4 rounded-lg bg-indigo-600 text-white text-sm px-4 py-2 hover:bg-indigo-500 disabled:opacity-60"
               >
-                {starting ? "Starting backup…" : "Start Backup"}
+                {starting
+                  ? "Starting backup..."
+                  : jobInProgress
+                  ? "Backup running..."
+                  : "Start Backup"}
               </button>
               {jobError && <div className="mt-2 text-xs text-red-300">{jobError}</div>}
             </div>
@@ -204,21 +258,46 @@ const ProjectBackup: React.FC = () => {
                       Project: {job.project_name} (ID: {job.project_id})
                     </div>
                   </div>
-                  <div className="text-xs px-2 py-1 rounded-full bg-slate-800 text-slate-200 capitalize">
-                    Status: {job.status}
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs px-2 py-1 rounded-full bg-slate-800 text-slate-200 capitalize">
+                      Status: {job.status}
+                      {polling && jobInProgress && <span className="ml-1 text-amber-300">...</span>}
+                    </div>
+                    {job.status === "completed" && (
+                      <button
+                        onClick={downloadBackup}
+                        disabled={downloading}
+                        className="text-xs px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-60"
+                      >
+                        {downloading ? "Preparing..." : "Download ZIP"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="mt-3 text-xs text-slate-400">
-                  Created {new Date(job.created_at * 1000).toLocaleString()} · Updated {" "}
+                  Created {new Date(job.created_at * 1000).toLocaleString()} | Updated{" "}
                   {new Date(job.updated_at * 1000).toLocaleString()}
                 </div>
 
                 <div className="mt-4 space-y-2 text-xs">
-                  {job.log.map((line, idx) => (
-                    <div key={idx} className="rounded-lg bg-slate-800 px-3 py-2 text-slate-200">
-                      {line}
-                    </div>
-                  ))}
+                  <div className="text-slate-300 flex items-center justify-between">
+                    <span>Job log</span>
+                    {jobInProgress && <span className="text-amber-300">Updating...</span>}
+                  </div>
+                  <div
+                    ref={logsRef}
+                    className="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2 text-slate-200 max-h-64 overflow-auto space-y-2"
+                  >
+                    {job.log && job.log.length > 0 ? (
+                      job.log.map((line, idx) => (
+                        <div key={idx} className="text-[12px]">
+                          {line}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-slate-500">No logs yet.</div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
