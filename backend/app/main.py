@@ -2063,36 +2063,79 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             _set_job_status(db, job, "stopped")
             return
 
-        if include_boq:
+        # Collect BOQ header IDs referenced by this project's estimate line items
+        used_boq_header_ids = set()
+        for li_list in estimates_block.get("lineitems", {}).values():
+            if not li_list:
+                continue
+            for li in li_list:
+                bhid = li.get("BoqHeaderId")
+                if bhid is None:
+                    continue
+                try:
+                    used_boq_header_ids.add(int(bhid))
+                except (TypeError, ValueError):
+                    # Ignore weird / non-numeric values
+                    continue
+
+        if include_boq and used_boq_header_ids:
+            # --- BOQ headers: only those referenced by this project ---
             try:
                 boq_api = BoqApi(auth)
                 base = boq_api.url
+                boq_headers: List[dict] = []
 
-                url_main = f"{base}"
-                boq_headers = _paged_fetch([url_main], boq_api.PAGE)
+                for hid in sorted(used_boq_header_ids):
+                    # Filter by BoqHeaderId so we don't fetch headers for other projects
+                    url = f"{base}?$filter=BoqHeaderId eq {hid}"
+                    hdr_chunk = _paged_fetch([url], boq_api.PAGE)
+                    boq_headers.extend(hdr_chunk)
 
                 boqs_block["headers"] = boq_headers
-                _append_backup_log(db, job, f"Fetched {len(boq_headers)} BOQ headers")
+                _append_backup_log(
+                    db,
+                    job,
+                    f"Fetched {len(boq_headers)} BOQ headers for project "
+                    f"(from {len(used_boq_header_ids)} distinct BoqHeaderId values)",
+                )
                 storage.record_rib_call(job.org_id, "projects.backup.boq.headers")
                 _set_progress(db, job, 75)
-
             except Exception as e:
                 _append_backup_log(db, job, f"BOQ headers fetch failed: {_friendly_rib_error(e)}")
 
-
+            # --- BOQ items: only those belonging to the same BOQ headers ---
             try:
                 boq_items_api = BoqItemApi(auth)
                 base = boq_items_api.url
-                url_main = base
-                url_fallback = base.replace("/2.0", "/1.0")
-                boq_items = _paged_fetch([url_main, url_fallback], boq_items_api.PAGE)
+                boq_items: List[dict] = []
+
+                for hid in sorted(used_boq_header_ids):
+                    url = f"{base}?$filter=BoqHeaderId eq {hid}"
+                    items_chunk = _paged_fetch([url], boq_items_api.PAGE)
+                    boq_items.extend(items_chunk)
+
                 boqs_block["items"] = boq_items
-                _append_backup_log(db, job, f"Fetched {len(boq_items)} BOQ items")
+                _append_backup_log(
+                    db,
+                    job,
+                    f"Fetched {len(boq_items)} BOQ items for project",
+                )
                 storage.record_rib_call(job.org_id, "projects.backup.boq.items")
                 _set_progress(db, job, 85)
             except Exception as e:
                 _append_backup_log(db, job, f"BOQ items fetch failed: {_friendly_rib_error(e)}")
+
+        elif include_boq:
+            # include_boq is True but we could not derive any BoqHeaderId from lineitems
+            _append_backup_log(
+                db,
+                job,
+                "No BOQ headers referenced by estimate line items for this project; skipping BOQ export.",
+            )
+
         backup_payload["boqs"] = boqs_block
+
+
 
         if _should_stop(job):
             _append_backup_log(db, job, "Backup stopped by user.")
