@@ -19,6 +19,7 @@ Static frontend (Vite build) is served from /app.
 import base64
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -1775,6 +1776,11 @@ def _friendly_rib_error(exc: Exception) -> str:
     return f"RIB server error{status_text}. Please contact support."
 
 
+def _slug_name(val: str) -> str:
+    val = re.sub(r"[^A-Za-z0-9]+", "_", val).strip("_")
+    return val or "project"
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str
@@ -1843,15 +1849,41 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
 
     def _finalize_zip(partial_progress: int, payload: Dict[str, Any], estimates: Dict[str, Any], activities: List[dict], boqs: Dict[str, Any]) -> None:
         zip_path = _backup_file_path(job.job_id)  # type: ignore[arg-type]
+        ts_label = _ts_label(job.created_at)
+        slug = _slug_name(job.project_name)
+        proj_id = job.project_id
+        def fname(prefix: str, ext: str = "json") -> str:
+            return f"{prefix}_{proj_id}_{ts_label}.{ext}"
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("meta.json", json.dumps(payload, ensure_ascii=False, indent=2))
-            zf.writestr("estimates/headers.json", json.dumps(estimates.get("headers", []), ensure_ascii=False, indent=2))
-            zf.writestr("estimates/lineitems.json", json.dumps(estimates.get("lineitems", {}), ensure_ascii=False, indent=2))
-            zf.writestr("estimates/resources.json", json.dumps(estimates.get("resources", {}), ensure_ascii=False, indent=2))
-            zf.writestr("estimates/cost_groups.json", json.dumps(estimates.get("cost_groups", {}), ensure_ascii=False, indent=2))
-            zf.writestr("activities.json", json.dumps(activities, ensure_ascii=False, indent=2))
-            zf.writestr("boq/headers.json", json.dumps(boqs.get("headers", []), ensure_ascii=False, indent=2))
-            zf.writestr("boq/items.json", json.dumps(boqs.get("items", []), ensure_ascii=False, indent=2))
+            zf.writestr(
+                f"estimates/{fname('EstimateHeaders')}",
+                json.dumps(estimates.get("headers", []), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"estimates/{fname('LineItems')}",
+                json.dumps(estimates.get("lineitems", {}), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"estimates/{fname('Resources')}",
+                json.dumps(estimates.get("resources", {}), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"estimates/{fname('CostGroups')}",
+                json.dumps(estimates.get("cost_groups", {}), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"activities/{fname('Activities')}",
+                json.dumps(activities, ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"boq/{fname('BoqHeaders')}",
+                json.dumps(boqs.get("headers", []), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"boq/{fname('BoqItems')}",
+                json.dumps(boqs.get("items", []), ensure_ascii=False, indent=2),
+            )
         _merge_job_options(job, {"progress": partial_progress, "file_path": zip_path})
 
     def _get_with_fallback(urls: List[str], auth_obj: Auth) -> List[dict]:
@@ -1870,6 +1902,18 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         if last_exc:
             raise last_exc
         return []
+
+    def _paged_fetch(base_urls: List[str], page: int) -> List[dict]:
+        results: List[dict] = []
+        skip = 0
+        while True:
+            urls = [f"{u}&$skip={skip}&$top={page}" if "?" in u else f"{u}?$skip={skip}&$top={page}" for u in base_urls]
+            chunk = _get_with_fallback(urls, auth)
+            results.extend(chunk)
+            if len(chunk) < page or _should_stop(job):
+                break
+            skip += page
+        return results
     try:
         job = db.query(DBBackupJob).filter(DBBackupJob.job_id == job_id).first()
         if not job:
@@ -1950,9 +1994,10 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                     if li_api:
                         try:
                             base = li_api.url
-                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={li_api.PAGE}"
-                            url_fallback = f"{base.replace('/3.0', '/2.0')}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={li_api.PAGE}"
-                            items = _get_with_fallback([url_main, url_fallback], auth)  # type: ignore[arg-type]
+                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}"
+                            url_fallback = f"{base.replace('/3.0', '/2.0')}?$filter=EstHeaderFk eq {hid_filter}"
+                            url_fallback2 = f"{base.replace('/3.0', '/1.0')}?$filter=EstHeaderFk eq {hid_filter}"
+                            items = _paged_fetch([url_main, url_fallback, url_fallback2], li_api.PAGE)
                             estimates_block["lineitems"][str(hid)] = items
                             _append_backup_log(db, job, f"Header {hid}: {len(items)} line items")
                             _set_progress(db, job, 35)
@@ -1969,9 +2014,10 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                     if res_api:
                         try:
                             base = res_api.url
-                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={res_api.PAGE}"
-                            url_fallback = f"{base.replace('/1.0', '/1.0')}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={res_api.PAGE}"
-                            resources = _get_with_fallback([url_main, url_fallback], auth)  # type: ignore[arg-type]
+                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}"
+                            url_fallback = f"{base.replace('/1.0', '/2.0')}?$filter=EstHeaderFk eq {hid_filter}"
+                            url_fallback2 = f"{base.replace('/1.0', '/3.0')}?$filter=EstHeaderFk eq {hid_filter}"
+                            resources = _paged_fetch([url_main, url_fallback, url_fallback2], res_api.PAGE)
                             estimates_block["resources"][str(hid)] = resources
                             _append_backup_log(db, job, f"Header {hid}: {len(resources)} resources")
                             _set_progress(db, job, 50)
@@ -2007,9 +2053,9 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             try:
                 boq_api = BoqApi(auth)
                 base = boq_api.url
-                url_main = f"{base}?$select=Id,Code,Description&$orderby=Code&$skip=0&$top={boq_api.PAGE}"
-                url_fallback = f"{base.replace('/2.0', '/1.0')}?$select=Id,Code,Description&$orderby=Code&$skip=0&$top={boq_api.PAGE}"
-                boq_headers = _get_with_fallback([url_main, url_fallback], auth)
+                url_main = f"{base}?$select=Id,Code,Description&$orderby=Code"
+                url_fallback = f"{base.replace('/2.0', '/1.0')}?$select=Id,Code,Description&$orderby=Code"
+                boq_headers = _paged_fetch([url_main, url_fallback], boq_api.PAGE)
                 boqs_block["headers"] = boq_headers
                 _append_backup_log(db, job, f"Fetched {len(boq_headers)} BOQ headers")
                 storage.record_rib_call(job.org_id, "projects.backup.boq.headers")
@@ -2019,9 +2065,9 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             try:
                 boq_items_api = BoqItemApi(auth)
                 base = boq_items_api.url
-                url_main = f"{base}?$skip=0&$top={boq_items_api.PAGE}"
-                url_fallback = f"{base.replace('/2.0', '/1.0')}?$skip=0&$top={boq_items_api.PAGE}"
-                boq_items = _get_with_fallback([url_main, url_fallback], auth)
+                url_main = base
+                url_fallback = base.replace("/2.0", "/1.0")
+                boq_items = _paged_fetch([url_main, url_fallback], boq_items_api.PAGE)
                 boqs_block["items"] = boq_items
                 _append_backup_log(db, job, f"Fetched {len(boq_items)} BOQ items")
                 storage.record_rib_call(job.org_id, "projects.backup.boq.items")
@@ -2184,9 +2230,9 @@ def download_backup_file(job_id: str, ctx: SessionCtx = Depends(require_org_user
     if not os.path.isfile(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backup file missing")
 
-    base_name = job.project_name or f"project_{job.project_id}"
-    safe_name = "".join([c for c in base_name if c.isalnum() or c in (" ", "-", "_")]).strip() or "backup"
-    download_name = f"{safe_name.replace(' ', '_')}_{job_id}.zip"
+    ts_label = _ts_label(job.created_at)
+    safe_proj = _slug_name(job.project_name)
+    download_name = f"{job.project_id}_{safe_proj}_{ts_label}.zip"
 
     return FileResponse(path, filename=download_name, media_type="application/zip")
 
