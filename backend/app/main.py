@@ -409,6 +409,15 @@ def _midnight(ts: int) -> int:
         return ts
 
 
+def _ts_label(ts: int) -> str:
+    try:
+        import datetime as _dt
+
+        return _dt.datetime.utcfromtimestamp(ts).strftime("%Y%m%d_%H%M%S")
+    except Exception:
+        return str(ts)
+
+
 def _payment_from_db(p: DBPayment) -> "PaymentOut":
     return PaymentOut(
         id=p.id,
@@ -2086,24 +2095,30 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("meta.json", json.dumps(backup_payload, ensure_ascii=False, indent=2))
             zf.writestr(
-                "estimates/headers.json",
+                f"estimates/{fname('EstimateHeaders')}",
                 json.dumps(estimates_block.get("headers", []), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                "estimates/lineitems.json",
+                f"estimates/{fname('LineItems')}",
                 json.dumps(estimates_block.get("lineitems", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                "estimates/resources.json",
+                f"estimates/{fname('Resources')}",
                 json.dumps(estimates_block.get("resources", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr(
-                "estimates/cost_groups.json",
+                f"estimates/{fname('CostGroups')}",
                 json.dumps(estimates_block.get("cost_groups", {}), ensure_ascii=False, indent=2),
             )
-            zf.writestr("activities.json", json.dumps(activities, ensure_ascii=False, indent=2))
-            zf.writestr("boq/headers.json", json.dumps(boqs_block.get("headers", []), ensure_ascii=False, indent=2))
-            zf.writestr("boq/items.json", json.dumps(boqs_block.get("items", []), ensure_ascii=False, indent=2))
+            zf.writestr(f"activities/{fname('Activities')}", json.dumps(activities, ensure_ascii=False, indent=2))
+            zf.writestr(
+                f"boq/{fname('BoqHeaders')}",
+                json.dumps(boqs_block.get("headers", []), ensure_ascii=False, indent=2),
+            )
+            zf.writestr(
+                f"boq/{fname('BoqItems')}",
+                json.dumps(boqs_block.get("items", []), ensure_ascii=False, indent=2),
+            )
 
         _merge_job_options(job, {**options, "file_path": zip_path})
         _set_progress(db, job, 100)
