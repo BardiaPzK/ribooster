@@ -22,8 +22,8 @@ from .models import RIBSession
 
 @dataclass
 class AuthCfg:
-    host: str  # e.g. "https://tng-linkdigital.rib40.cloud/itwo40/services"
-    company: str  # e.g. "TNG-100"
+    host: str  # e.g. "https://x.rib40.cloud/itwo40/services"
+    company: str  # e.g. "xx-100"
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ class EstimateLineItemApi:
         skip = 0
         while True:
             rsp = sess.get(
-                f"{self.url}?$filter=EstHeaderFk eq {hdr_id}&$skip={skip}&$top={self.PAGE}",
+                f"{self.url}?$filter=EstHeaderId eq {hdr_id}&$skip={skip}&$top={self.PAGE}",
                 headers=hdr,
                 timeout=60,
             )
@@ -245,7 +245,7 @@ class EstimateResourceApi:
         skip = 0
         while True:
             rsp = sess.get(
-                f"{self.url}?$filter=EstHeaderFk eq {hdr_id}&$skip={skip}&$top={self.PAGE}",
+                f"{self.url}?$filter=EstHeaderId eq {hdr_id}&$skip={skip}&$top={self.PAGE}",
                 headers=hdr,
                 timeout=60,
             )
@@ -290,12 +290,8 @@ class BoqApi:
         out: List[dict] = []
         skip = 0
         while True:
-            url = (
-                f"{self.url}"
-                f"?$select=Id,Code,Description"
-                f"&$orderby=Code"
-                f"&$skip={skip}&$top={self.PAGE}"
-            )
+            # No $select / $orderby: let server return the full BOQ header DTO
+            url = f"{self.url}?$skip={skip}&$top={self.PAGE}"
             rsp = sess.get(url, headers=hdr, timeout=60)
             rsp.raise_for_status()
             payload = rsp.json()
@@ -307,15 +303,21 @@ class BoqApi:
                 break
             skip += self.PAGE
 
+        # Best-effort mapping for UI; Code/Description may not exist on this DTO
         if code_like:
             out = [x for x in out if code_like in str(x.get("Code", ""))]
         if only_int:
             out = [x for x in out if str(x.get("Code", "")).isdigit()]
 
         return [
-            {"Id": x.get("Id"), "Code": x.get("Code"), "Description": x.get("Description") or ""}
+            {
+                "Id": x.get("Id"),
+                "Code": x.get("Code") or str(x.get("BoqHeaderId") or ""),
+                "Description": x.get("BoqTypeDesc") or x.get("BoqStructureDesc") or "",
+            }
             for x in out
         ]
+
 
 
 class ActivityApi:

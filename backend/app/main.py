@@ -107,7 +107,7 @@ def _normalize_allowed_users(raw: Optional[str]) -> list[str]:
 
 
 # ---------------------------------------------------------
-# FIX: Create the FastAPI app BEFORE any routes
+#  Create the FastAPI app BEFORE any routes
 # ---------------------------------------------------------
 
 app = FastAPI(title="ribooster API", version="0.4.0")
@@ -128,7 +128,7 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------
-# ROUTES CAN START NOW
+# ROUTES CAN START HERE
 # ---------------------------------------------------------
 
 @app.get("/", include_in_schema=False)
@@ -472,7 +472,7 @@ def _get_org_company_by_code(db: SASession, code: str):
     stmt = (
         select(DBOrganization, DBCompany)
         .join(DBCompany, DBCompany.org_id == DBOrganization.org_id)
-        .where(DBCompany.code == code)  # << FIX HERE
+        .where(DBCompany.code == code)
     )
     row = db.execute(stmt).first()
     if not row:
@@ -2003,15 +2003,16 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                     if li_api:
                         try:
                             base = li_api.url
-                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}"
-                            url_fallback = f"{base.replace('/3.0', '/2.0')}?$filter=EstHeaderFk eq {hid_filter}"
-                            url_fallback2 = f"{base.replace('/3.0', '/1.0')}?$filter=EstHeaderFk eq {hid_filter}"
+                            url_main = f"{base}?$filter=EstHeaderId eq {hid_filter}"
+                            url_fallback = f"{base.replace('/3.0', '/2.0')}?$filter=EstHeaderId eq {hid_filter}"
+                            url_fallback2 = f"{base.replace('/3.0', '/1.0')}?$filter=EstHeaderId eq {hid_filter}"
                             items = _paged_fetch([url_main, url_fallback, url_fallback2], li_api.PAGE)
                             estimates_block["lineitems"][str(hid)] = items
                             _append_backup_log(db, job, f"Header {hid}: {len(items)} line items")
                             _set_progress(db, job, 35)
                         except Exception as e:
                             _append_backup_log(db, job, f"Header {hid}: line item fetch failed ({_friendly_rib_error(e)})")
+
 
                     if cg_api:
                         try:
@@ -2023,15 +2024,17 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                     if res_api:
                         try:
                             base = res_api.url
-                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}"
-                            url_fallback = f"{base.replace('/1.0', '/2.0')}?$filter=EstHeaderFk eq {hid_filter}"
-                            url_fallback2 = f"{base.replace('/1.0', '/3.0')}?$filter=EstHeaderFk eq {hid_filter}"
+                            url_main = f"{base}?$filter=EstHeaderId eq {hid_filter}"
+                            url_fallback = f"{base.replace('/1.0', '/2.0')}?$filter=EstHeaderId eq {hid_filter}"
+                            url_fallback2 = f"{base.replace('/1.0', '/3.0')}?$filter=EstHeaderId eq {hid_filter}"
                             resources = _paged_fetch([url_main, url_fallback, url_fallback2], res_api.PAGE)
                             estimates_block["resources"][str(hid)] = resources
                             _append_backup_log(db, job, f"Header {hid}: {len(resources)} resources")
                             _set_progress(db, job, 50)
                         except Exception as e:
                             _append_backup_log(db, job, f"Header {hid}: resource fetch failed ({_friendly_rib_error(e)})")
+
+
 
                     if _should_stop(job):
                         _append_backup_log(db, job, "Backup stopped by user.")
