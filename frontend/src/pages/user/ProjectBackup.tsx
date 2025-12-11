@@ -20,6 +20,7 @@ type BackupJob = {
   updated_at: number;
   log: string[];
   options: Record<string, any>;
+  progress?: number;
 };
 
 const ProjectBackup: React.FC = () => {
@@ -90,6 +91,18 @@ const ProjectBackup: React.FC = () => {
   }, [job?.log]);
 
   const jobInProgress = !!job && job.status !== "completed" && job.status !== "failed";
+  const progress = Math.max(
+    0,
+    Math.min(
+      100,
+      job?.progress ??
+        (typeof job?.options?.progress === "number" ? (job?.options?.progress as number) : 0)
+    )
+  );
+  const lastLog =
+    job?.log && job.log.length > 0
+      ? job.log[job.log.length - 1].replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, "")
+      : null;
 
   const startBackup = async () => {
     if (!selectedProjectId || !selectedProjectName) return;
@@ -156,7 +169,7 @@ const ProjectBackup: React.FC = () => {
                 {loadingProjects ? "Refreshing..." : "Refresh"}
               </button>
             </div>
-            <div className="flex-1 overflow-auto max-h-[65vh]">
+            <div className="flex-1 overflow-auto max-h-[60vh] lg:max-h-[70vh]">
               {loadingProjects && <div className="p-4 text-xs text-slate-400">Loading...</div>}
               {!loadingProjects && projectsError && (
                 <div className="p-4 text-xs text-red-300 bg-red-950/40 border-b border-red-900">
@@ -277,6 +290,24 @@ const ProjectBackup: React.FC = () => {
                 <div className="mt-3 text-xs text-slate-400">
                   Created {new Date(job.created_at * 1000).toLocaleString()} | Updated{" "}
                   {new Date(job.updated_at * 1000).toLocaleString()}
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-300">
+                    <span>Progress</span>
+                    <span className="font-semibold text-indigo-200">{progress}%</span>
+                  </div>
+                  <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-indigo-500 via-blue-400 to-cyan-400 transition-all duration-500"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  {lastLog && (
+                    <div className="text-[12px] text-slate-300">
+                      Current step: <span className="text-indigo-200">{lastLog}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-4 space-y-2 text-xs">

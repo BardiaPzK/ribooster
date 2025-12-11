@@ -57,6 +57,8 @@ from .rib_client import (
     EstimateResourceApi,
     ActivityApi,
     LineItem2CostGrpApi,
+    BoqApi,
+    BoqItemApi,
 )
 from .ai_helpdesk import run_helpdesk_completion
 from .db import (
@@ -71,6 +73,7 @@ from .db import (
     DBHelpdeskMessage,
     DBBackupJob,
     DBPayment,
+    DBMetricCounter,
     DBUserLog,
     DBTextSqlLog,
     seed_default_org_company,
@@ -424,6 +427,7 @@ def _payment_from_db(p: DBPayment) -> "PaymentOut":
 def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
     log = []
     options = {}
+    progress = 0
     if b.log_json:
         try:
             log = json.loads(b.log_json)
@@ -434,6 +438,10 @@ def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
             options = json.loads(b.options_json)
         except Exception:
             options = {}
+    try:
+        progress = int(options.get("progress", 0))
+    except Exception:
+        progress = 0
     return BackupJobOut(
         job_id=b.job_id,
         org_id=b.org_id,
@@ -446,6 +454,7 @@ def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
         updated_at=b.updated_at,
         log=log,
         options=options,
+        progress=progress,
     )
 
 
@@ -1738,6 +1747,16 @@ def _set_job_status(db: SASession, job: DBBackupJob, status: str) -> None:
     db.refresh(job)
 
 
+def _set_progress(db: SASession, job: DBBackupJob, value: int) -> int:
+    value = max(0, min(100, int(value)))
+    options = _merge_job_options(job, {"progress": value})
+    job.options_json = json.dumps(options)
+    job.updated_at = int(time.time())
+    db.commit()
+    db.refresh(job)
+    return value
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str
@@ -1789,6 +1808,7 @@ class BackupJobOut(BaseModel):
     updated_at: int
     log: List[str]
     options: Dict[str, Any]
+    progress: int = 0
 
 
 def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) -> None:
@@ -1810,6 +1830,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         options = _merge_job_options(job, options or {})
         _append_backup_log(db, job, f"Starting backup for project {job.project_id} ({job.project_name})")
         _set_job_status(db, job, "running")
+        _set_progress(db, job, 5)
 
         sess = storage.get_session(session_token)
         if not sess or not sess.rib_session:
@@ -1825,6 +1846,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         include_lineitems = bool(options.get("include_lineitems", True))
         include_resources = bool(options.get("include_resources", True))
         include_activities = bool(options.get("include_activities", True))
+        include_boq = True  # always fetch BOQ metadata to enrich backup
 
         backup_payload: Dict[str, Any] = {
             "project": {"id": job.project_id, "name": job.project_name},
@@ -1833,6 +1855,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         }
 
         estimates_block: Dict[str, Any] = {"headers": [], "lineitems": {}, "resources": {}, "cost_groups": {}}
+        boqs_block: Dict[str, Any] = {"headers": [], "items": []}
 
         if include_estimates:
             try:
@@ -1840,6 +1863,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 estimates_block["headers"] = headers
                 _append_backup_log(db, job, f"Fetched {len(headers)} estimate headers")
                 storage.record_rib_call(job.org_id, "projects.backup.estimates")
+                _set_progress(db, job, 20)
             except Exception as e:
                 _append_backup_log(db, job, f"Failed fetching estimate headers: {e}")
                 _set_job_status(db, job, "failed")
@@ -1861,6 +1885,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                             items = li_api.by_header(hid_filter)  # type: ignore[arg-type]
                             estimates_block["lineitems"][str(hid)] = items
                             _append_backup_log(db, job, f"Header {hid}: {len(items)} line items")
+                            _set_progress(db, job, 35)
                         except Exception as e:
                             _append_backup_log(db, job, f"Header {hid}: line item fetch failed ({e})")
 
@@ -1876,6 +1901,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                             resources = res_api.by_header(hid_filter)  # type: ignore[arg-type]
                             estimates_block["resources"][str(hid)] = resources
                             _append_backup_log(db, job, f"Header {hid}: {len(resources)} resources")
+                            _set_progress(db, job, 50)
                         except Exception as e:
                             _append_backup_log(db, job, f"Header {hid}: resource fetch failed ({e})")
 
@@ -1887,9 +1913,29 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 activities = ActivityApi(auth).by_project(project_filter)  # type: ignore[arg-type]
                 _append_backup_log(db, job, f"Fetched {len(activities)} activities")
                 storage.record_rib_call(job.org_id, "projects.backup.activities")
+                _set_progress(db, job, 65)
             except Exception as e:
                 _append_backup_log(db, job, f"Activities fetch failed: {e}")
         backup_payload["activities"] = activities
+
+        if include_boq:
+            try:
+                boq_headers = BoqApi(auth).headers()
+                boqs_block["headers"] = boq_headers
+                _append_backup_log(db, job, f"Fetched {len(boq_headers)} BOQ headers")
+                storage.record_rib_call(job.org_id, "projects.backup.boq.headers")
+                _set_progress(db, job, 75)
+            except Exception as e:
+                _append_backup_log(db, job, f"BOQ headers fetch failed: {e}")
+            try:
+                boq_items = BoqItemApi(auth).all()
+                boqs_block["items"] = boq_items
+                _append_backup_log(db, job, f"Fetched {len(boq_items)} BOQ items")
+                storage.record_rib_call(job.org_id, "projects.backup.boq.items")
+                _set_progress(db, job, 85)
+            except Exception as e:
+                _append_backup_log(db, job, f"BOQ items fetch failed: {e}")
+        backup_payload["boqs"] = boqs_block
 
         zip_path = _backup_file_path(job.job_id)
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1911,8 +1957,11 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 json.dumps(estimates_block.get("cost_groups", {}), ensure_ascii=False, indent=2),
             )
             zf.writestr("activities.json", json.dumps(activities, ensure_ascii=False, indent=2))
+            zf.writestr("boq/headers.json", json.dumps(boqs_block.get("headers", []), ensure_ascii=False, indent=2))
+            zf.writestr("boq/items.json", json.dumps(boqs_block.get("items", []), ensure_ascii=False, indent=2))
 
         _merge_job_options(job, {**options, "file_path": zip_path})
+        _set_progress(db, job, 100)
         _append_backup_log(db, job, "Backup completed. ZIP ready for download.")
         _set_job_status(db, job, "completed")
     except Exception as e:
