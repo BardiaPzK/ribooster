@@ -1834,8 +1834,12 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
     job: Optional[DBBackupJob] = None
 
     def _should_stop(j: DBBackupJob) -> bool:
+        try:
+            db.refresh(j)
+        except Exception:
+            return False
         opts = _job_options(j)
-        return bool(opts.get("stop_requested"))
+        return bool(opts.get("stop_requested") or j.status == "stopping")
 
     def _finalize_zip(partial_progress: int, payload: Dict[str, Any], estimates: Dict[str, Any], activities: List[dict], boqs: Dict[str, Any]) -> None:
         zip_path = _backup_file_path(job.job_id)  # type: ignore[arg-type]
@@ -1849,6 +1853,23 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             zf.writestr("boq/headers.json", json.dumps(boqs.get("headers", []), ensure_ascii=False, indent=2))
             zf.writestr("boq/items.json", json.dumps(boqs.get("items", []), ensure_ascii=False, indent=2))
         _merge_job_options(job, {"progress": partial_progress, "file_path": zip_path})
+
+    def _get_with_fallback(urls: List[str], auth_obj: Auth) -> List[dict]:
+        sess, hdr = auth_obj.sess, auth_obj.hdr()
+        last_exc: Optional[Exception] = None
+        for u in urls:
+            try:
+                rsp = sess.get(u, headers=hdr, timeout=60)
+                rsp.raise_for_status()
+                data = rsp.json()
+                chunk = data.get("value", data) if isinstance(data, dict) else data
+                return chunk if isinstance(chunk, list) else []
+            except Exception as e:
+                last_exc = e
+                continue
+        if last_exc:
+            raise last_exc
+        return []
     try:
         job = db.query(DBBackupJob).filter(DBBackupJob.job_id == job_id).first()
         if not job:
@@ -1916,6 +1937,11 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 cg_api = LineItem2CostGrpApi(auth) if include_lineitems else None
 
                 for hdr in headers:
+                    if _should_stop(job):
+                        _append_backup_log(db, job, "Backup stopped by user.")
+                        _finalize_zip(25, backup_payload, estimates_block, [], boqs_block)
+                        _set_job_status(db, job, "stopped")
+                        return
                     hid = hdr.get("Id") or hdr.get("id") or hdr.get("ID")
                     if hid is None:
                         continue
@@ -1923,7 +1949,10 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
 
                     if li_api:
                         try:
-                            items = li_api.by_header(hid_filter)  # type: ignore[arg-type]
+                            base = li_api.url
+                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={li_api.PAGE}"
+                            url_fallback = f"{base.replace('/3.0', '/2.0')}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={li_api.PAGE}"
+                            items = _get_with_fallback([url_main, url_fallback], auth)  # type: ignore[arg-type]
                             estimates_block["lineitems"][str(hid)] = items
                             _append_backup_log(db, job, f"Header {hid}: {len(items)} line items")
                             _set_progress(db, job, 35)
@@ -1939,7 +1968,10 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
 
                     if res_api:
                         try:
-                            resources = res_api.by_header(hid_filter)  # type: ignore[arg-type]
+                            base = res_api.url
+                            url_main = f"{base}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={res_api.PAGE}"
+                            url_fallback = f"{base.replace('/1.0', '/1.0')}?$filter=EstHeaderFk eq {hid_filter}&$skip=0&$top={res_api.PAGE}"
+                            resources = _get_with_fallback([url_main, url_fallback], auth)  # type: ignore[arg-type]
                             estimates_block["resources"][str(hid)] = resources
                             _append_backup_log(db, job, f"Header {hid}: {len(resources)} resources")
                             _set_progress(db, job, 50)
@@ -1973,7 +2005,11 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
 
         if include_boq:
             try:
-                boq_headers = BoqApi(auth).headers()
+                boq_api = BoqApi(auth)
+                base = boq_api.url
+                url_main = f"{base}?$select=Id,Code,Description&$orderby=Code&$skip=0&$top={boq_api.PAGE}"
+                url_fallback = f"{base.replace('/2.0', '/1.0')}?$select=Id,Code,Description&$orderby=Code&$skip=0&$top={boq_api.PAGE}"
+                boq_headers = _get_with_fallback([url_main, url_fallback], auth)
                 boqs_block["headers"] = boq_headers
                 _append_backup_log(db, job, f"Fetched {len(boq_headers)} BOQ headers")
                 storage.record_rib_call(job.org_id, "projects.backup.boq.headers")
@@ -1981,7 +2017,11 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             except Exception as e:
                 _append_backup_log(db, job, f"BOQ headers fetch failed: {_friendly_rib_error(e)}")
             try:
-                boq_items = BoqItemApi(auth).all()
+                boq_items_api = BoqItemApi(auth)
+                base = boq_items_api.url
+                url_main = f"{base}?$skip=0&$top={boq_items_api.PAGE}"
+                url_fallback = f"{base.replace('/2.0', '/1.0')}?$skip=0&$top={boq_items_api.PAGE}"
+                boq_items = _get_with_fallback([url_main, url_fallback], auth)
                 boqs_block["items"] = boq_items
                 _append_backup_log(db, job, f"Fetched {len(boq_items)} BOQ items")
                 storage.record_rib_call(job.org_id, "projects.backup.boq.items")
@@ -2113,6 +2153,7 @@ def stop_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user), db
         return _backup_from_db(job)
 
     opts = _merge_job_options(job, {"stop_requested": True})
+    _append_backup_log(db, job, "Stop requested by user.")
     if job.status == "running":
         job.status = "stopping"
     job.options_json = json.dumps(opts)

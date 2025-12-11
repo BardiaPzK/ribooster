@@ -300,7 +300,7 @@ const ProjectBackup: React.FC = () => {
                         {stopping ? "Stopping..." : "Stop"}
                       </button>
                     )}
-                    {job.status === "completed" && (
+                    {(job.status === "completed" || job.status === "stopped") && (
                       <button
                         onClick={downloadBackup}
                         disabled={downloading}
