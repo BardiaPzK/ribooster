@@ -41,6 +41,7 @@ const ProjectBackup: React.FC = () => {
   const [starting, setStarting] = useState(false);
   const [polling, setPolling] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
 
   const loadProjects = async () => {
@@ -143,6 +144,20 @@ const ProjectBackup: React.FC = () => {
       setJobError(e.message ?? "Failed to download backup");
     } finally {
       setDownloading(false);
+    }
+  };
+
+  const stopBackup = async () => {
+    if (!job || !jobInProgress) return;
+    setStopping(true);
+    setJobError(null);
+    try {
+      const stopped = (await api.projects.stopBackup(job.job_id)) as BackupJob;
+      setJob(stopped);
+    } catch (e: any) {
+      setJobError(e.message ?? "Failed to stop backup");
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -276,6 +291,15 @@ const ProjectBackup: React.FC = () => {
                       Status: {job.status}
                       {polling && jobInProgress && <span className="ml-1 text-amber-300">...</span>}
                     </div>
+                    {jobInProgress && (
+                      <button
+                        onClick={stopBackup}
+                        disabled={stopping}
+                        className="text-xs px-3 py-1 rounded-md bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-60"
+                      >
+                        {stopping ? "Stopping..." : "Stop"}
+                      </button>
+                    )}
                     {job.status === "completed" && (
                       <button
                         onClick={downloadBackup}

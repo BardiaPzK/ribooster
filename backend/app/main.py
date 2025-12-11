@@ -1712,13 +1712,19 @@ def _backup_file_path(job_id: str) -> str:
     return str(BACKUP_DIR / f"{job_id}.zip")
 
 
+def _job_options(job: DBBackupJob) -> Dict[str, Any]:
+    try:
+        if job.options_json:
+            data = json.loads(job.options_json) or {}
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
 def _merge_job_options(job: DBBackupJob, patch: Dict[str, Any]) -> Dict[str, Any]:
-    options: Dict[str, Any] = {}
-    if job.options_json:
-        try:
-            options = json.loads(job.options_json) or {}
-        except Exception:
-            options = {}
+    options: Dict[str, Any] = _job_options(job)
     options.update(patch)
     job.options_json = json.dumps(options)
     return options
@@ -1755,6 +1761,18 @@ def _set_progress(db: SASession, job: DBBackupJob, value: int) -> int:
     db.commit()
     db.refresh(job)
     return value
+
+
+def _friendly_rib_error(exc: Exception) -> str:
+    status_text = ""
+    try:
+        import requests  # type: ignore
+
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            status_text = f" ({exc.response.status_code})"
+    except Exception:
+        pass
+    return f"RIB server error{status_text}. Please contact support."
 
 
 class ProjectOut(BaseModel):
@@ -1814,6 +1832,23 @@ class BackupJobOut(BaseModel):
 def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) -> None:
     db = SessionLocal()
     job: Optional[DBBackupJob] = None
+
+    def _should_stop(j: DBBackupJob) -> bool:
+        opts = _job_options(j)
+        return bool(opts.get("stop_requested"))
+
+    def _finalize_zip(partial_progress: int, payload: Dict[str, Any], estimates: Dict[str, Any], activities: List[dict], boqs: Dict[str, Any]) -> None:
+        zip_path = _backup_file_path(job.job_id)  # type: ignore[arg-type]
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("meta.json", json.dumps(payload, ensure_ascii=False, indent=2))
+            zf.writestr("estimates/headers.json", json.dumps(estimates.get("headers", []), ensure_ascii=False, indent=2))
+            zf.writestr("estimates/lineitems.json", json.dumps(estimates.get("lineitems", {}), ensure_ascii=False, indent=2))
+            zf.writestr("estimates/resources.json", json.dumps(estimates.get("resources", {}), ensure_ascii=False, indent=2))
+            zf.writestr("estimates/cost_groups.json", json.dumps(estimates.get("cost_groups", {}), ensure_ascii=False, indent=2))
+            zf.writestr("activities.json", json.dumps(activities, ensure_ascii=False, indent=2))
+            zf.writestr("boq/headers.json", json.dumps(boqs.get("headers", []), ensure_ascii=False, indent=2))
+            zf.writestr("boq/items.json", json.dumps(boqs.get("items", []), ensure_ascii=False, indent=2))
+        _merge_job_options(job, {"progress": partial_progress, "file_path": zip_path})
     try:
         job = db.query(DBBackupJob).filter(DBBackupJob.job_id == job_id).first()
         if not job:
@@ -1857,6 +1892,12 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
         estimates_block: Dict[str, Any] = {"headers": [], "lineitems": {}, "resources": {}, "cost_groups": {}}
         boqs_block: Dict[str, Any] = {"headers": [], "items": []}
 
+        if _should_stop(job):
+            _append_backup_log(db, job, "Backup stopped by user before data fetch.")
+            _finalize_zip(5, backup_payload, estimates_block, [], boqs_block)
+            _set_job_status(db, job, "stopped")
+            return
+
         if include_estimates:
             try:
                 headers = EstHeaderApi(auth).by_project(project_filter)  # type: ignore[arg-type]
@@ -1865,7 +1906,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 storage.record_rib_call(job.org_id, "projects.backup.estimates")
                 _set_progress(db, job, 20)
             except Exception as e:
-                _append_backup_log(db, job, f"Failed fetching estimate headers: {e}")
+                _append_backup_log(db, job, f"Failed fetching estimate headers: {_friendly_rib_error(e)}")
                 _set_job_status(db, job, "failed")
                 return
 
@@ -1887,7 +1928,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                             _append_backup_log(db, job, f"Header {hid}: {len(items)} line items")
                             _set_progress(db, job, 35)
                         except Exception as e:
-                            _append_backup_log(db, job, f"Header {hid}: line item fetch failed ({e})")
+                            _append_backup_log(db, job, f"Header {hid}: line item fetch failed ({_friendly_rib_error(e)})")
 
                     if cg_api:
                         try:
@@ -1903,7 +1944,13 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                             _append_backup_log(db, job, f"Header {hid}: {len(resources)} resources")
                             _set_progress(db, job, 50)
                         except Exception as e:
-                            _append_backup_log(db, job, f"Header {hid}: resource fetch failed ({e})")
+                            _append_backup_log(db, job, f"Header {hid}: resource fetch failed ({_friendly_rib_error(e)})")
+
+                    if _should_stop(job):
+                        _append_backup_log(db, job, "Backup stopped by user.")
+                        _finalize_zip(50, backup_payload, estimates_block, [], boqs_block)
+                        _set_job_status(db, job, "stopped")
+                        return
 
         backup_payload["estimates"] = estimates_block
 
@@ -1915,8 +1962,14 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 storage.record_rib_call(job.org_id, "projects.backup.activities")
                 _set_progress(db, job, 65)
             except Exception as e:
-                _append_backup_log(db, job, f"Activities fetch failed: {e}")
+                _append_backup_log(db, job, f"Activities fetch failed: {_friendly_rib_error(e)}")
         backup_payload["activities"] = activities
+
+        if _should_stop(job):
+            _append_backup_log(db, job, "Backup stopped by user.")
+            _finalize_zip(65, backup_payload, estimates_block, activities, boqs_block)
+            _set_job_status(db, job, "stopped")
+            return
 
         if include_boq:
             try:
@@ -1926,7 +1979,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 storage.record_rib_call(job.org_id, "projects.backup.boq.headers")
                 _set_progress(db, job, 75)
             except Exception as e:
-                _append_backup_log(db, job, f"BOQ headers fetch failed: {e}")
+                _append_backup_log(db, job, f"BOQ headers fetch failed: {_friendly_rib_error(e)}")
             try:
                 boq_items = BoqItemApi(auth).all()
                 boqs_block["items"] = boq_items
@@ -1934,8 +1987,14 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
                 storage.record_rib_call(job.org_id, "projects.backup.boq.items")
                 _set_progress(db, job, 85)
             except Exception as e:
-                _append_backup_log(db, job, f"BOQ items fetch failed: {e}")
+                _append_backup_log(db, job, f"BOQ items fetch failed: {_friendly_rib_error(e)}")
         backup_payload["boqs"] = boqs_block
+
+        if _should_stop(job):
+            _append_backup_log(db, job, "Backup stopped by user.")
+            _finalize_zip(85, backup_payload, estimates_block, activities, boqs_block)
+            _set_job_status(db, job, "stopped")
+            return
 
         zip_path = _backup_file_path(job.job_id)
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1967,7 +2026,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
     except Exception as e:
         try:
             if job:
-                _append_backup_log(db, job, f"Backup failed: {e}")
+                _append_backup_log(db, job, f"Backup failed: {_friendly_rib_error(e)}")
                 _set_job_status(db, job, "failed")
         except Exception:
             pass
@@ -2036,6 +2095,33 @@ def get_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user), db:
     return _backup_from_db(job)
 
 
+@app.post("/api/user/projects/backup/{job_id}/stop", response_model=BackupJobOut)
+def stop_backup_job(job_id: str, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
+    job = (
+        db.query(DBBackupJob)
+        .filter(
+            DBBackupJob.job_id == job_id,
+            DBBackupJob.org_id == ctx.org_id,
+            DBBackupJob.company_id == ctx.company_id,
+            DBBackupJob.user_id == ctx.user_id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.status in ("completed", "failed", "stopped"):
+        return _backup_from_db(job)
+
+    opts = _merge_job_options(job, {"stop_requested": True})
+    if job.status == "running":
+        job.status = "stopping"
+    job.options_json = json.dumps(opts)
+    job.updated_at = int(time.time())
+    db.commit()
+    db.refresh(job)
+    return _backup_from_db(job)
+
+
 @app.get("/api/user/projects/backup/{job_id}/file")
 def download_backup_file(job_id: str, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)):
     job = (
@@ -2050,7 +2136,7 @@ def download_backup_file(job_id: str, ctx: SessionCtx = Depends(require_org_user
     )
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    if job.status != "completed":
+    if job.status not in ("completed", "stopped"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Backup not ready yet")
 
     path = _backup_file_path(job_id)

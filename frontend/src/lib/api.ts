@@ -276,6 +276,9 @@ export const api = {
         body: JSON.stringify(payload),
       });
     },
+    stopBackup(id: string) {
+      return request(`/user/projects/backup/${id}/stop`, { method: "POST" });
+    },
     getBackup(id: string) {
       return request(`/user/projects/backup/${id}`);
     },
