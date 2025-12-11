@@ -19,7 +19,8 @@ export default function Layout({ children }: Props) {
       .then((ctx: UserContext) => {
         if (cancelled) return;
         setFeatures(ctx.company?.features || {});
-        setLicenseActive(ctx.org?.license?.active !== false);
+        // Use the company-level license to keep sidebar gating aligned with the user dashboard cards.
+        setLicenseActive(ctx.company?.license?.active !== false);
       })
       .catch(() => {
         if (cancelled) return;
