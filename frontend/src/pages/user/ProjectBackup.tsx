@@ -1,5 +1,5 @@
 // frontend/src/pages/user/ProjectBackup.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Layout from "../../components/Layout";
 import { api } from "../../lib/api";
 
@@ -13,6 +13,7 @@ type BackupJob = {
   org_id: string;
   company_id: string;
   user_id: string;
+  username?: string | null;
   project_id: string;
   project_name: string;
   status: "pending" | "running" | "completed" | "failed" | string;
@@ -42,6 +43,9 @@ const ProjectBackup: React.FC = () => {
   const [polling, setPolling] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [history, setHistory] = useState<BackupJob[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
 
   const loadProjects = async () => {
@@ -61,9 +65,23 @@ const ProjectBackup: React.FC = () => {
     }
   };
 
+  const loadHistory = useCallback(async () => {
+    setLoadingHistory(true);
+    setHistoryError(null);
+    try {
+      const items = await api.projects.history(12);
+      setHistory(items as BackupJob[]);
+    } catch (e: any) {
+      setHistoryError(e.message ?? "Failed to load backup history");
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadProjects();
-  }, []);
+    loadHistory();
+  }, [loadHistory]);
 
   useEffect(() => {
     if (!job || job.status === "completed" || job.status === "failed") {
@@ -91,19 +109,38 @@ const ProjectBackup: React.FC = () => {
     }
   }, [job?.log]);
 
-  const jobInProgress = !!job && job.status !== "completed" && job.status !== "failed";
-  const progress = Math.max(
-    0,
-    Math.min(
-      100,
-      job?.progress ??
-        (typeof job?.options?.progress === "number" ? (job?.options?.progress as number) : 0)
-    )
-  );
+  useEffect(() => {
+    if (job && ["completed", "failed", "stopped"].includes(job.status)) {
+      loadHistory();
+    }
+  }, [job?.status, loadHistory]);
+
+  const jobProgress = (j?: BackupJob | null) =>
+    Math.max(
+      0,
+      Math.min(
+        100,
+        j?.progress ?? (typeof j?.options?.progress === "number" ? Number(j?.options?.progress) : 0)
+      )
+    );
+
+  const jobInProgress = !!job && !["completed", "failed", "stopped"].includes(job.status);
+  const progress = jobProgress(job);
   const lastLog =
     job?.log && job.log.length > 0
       ? job.log[job.log.length - 1].replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, "")
       : null;
+
+  const statusClasses = (status: string) => {
+    if (status === "completed") return "bg-emerald-600/20 text-emerald-100 border border-emerald-500/30";
+    if (status === "running" || status === "pending") return "bg-indigo-500/20 text-indigo-100 border border-indigo-400/30";
+    if (status === "stopped") return "bg-amber-500/20 text-amber-100 border border-amber-400/30";
+    if (status === "failed") return "bg-red-600/20 text-red-100 border border-red-500/30";
+    return "bg-slate-800 text-slate-200 border border-slate-700";
+  };
+
+  const statusLabel = (status: string) =>
+    status ? status.charAt(0).toUpperCase() + status.slice(1) : "Unknown";
 
   const startBackup = async () => {
     if (!selectedProjectId || !selectedProjectName) return;
@@ -119,6 +156,7 @@ const ProjectBackup: React.FC = () => {
         include_activities: includeActivities,
       });
       setJob(jobResp as BackupJob);
+      loadHistory();
     } catch (e: any) {
       setJobError(e.message ?? "Failed to start backup");
     } finally {
@@ -356,6 +394,63 @@ const ProjectBackup: React.FC = () => {
                 </div>
               </div>
             )}
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-slate-100">Recent Backups</div>
+                  <div className="text-xs text-slate-400 mt-0.5">Latest requests for this company code.</div>
+                </div>
+                <button
+                  onClick={loadHistory}
+                  disabled={loadingHistory}
+                  className="text-xs px-3 py-1 rounded-md bg-slate-800 text-slate-100 border border-slate-700 hover:border-slate-500 disabled:opacity-60"
+                >
+                  {loadingHistory ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              {historyError && (
+                <div className="mt-3 text-xs text-red-300 bg-red-950/40 border border-red-900 px-3 py-2 rounded-lg">
+                  {historyError}
+                </div>
+              )}
+
+              {!historyError && history.length === 0 && !loadingHistory && (
+                <div className="mt-3 text-xs text-slate-400">No backup requests yet.</div>
+              )}
+
+              {loadingHistory && (
+                <div className="mt-3 text-xs text-slate-400">Loading history...</div>
+              )}
+
+              {history.length > 0 && (
+                <div className="mt-3 divide-y divide-slate-800">
+                  {history.map((h) => (
+                    <div
+                      key={h.job_id}
+                      className="py-3 flex items-start justify-between gap-3 text-xs text-slate-300"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="text-sm text-slate-100 font-semibold truncate">{h.project_name}</div>
+                        <div className="text-[11px] text-slate-400 truncate">
+                          {new Date(h.created_at * 1000).toLocaleString()} • {h.username || h.user_id}
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate">Project ID: {h.project_id}</div>
+                      </div>
+                      <div className="text-right space-y-1 min-w-[140px]">
+                        <span
+                          className={`inline-block ${statusClasses(h.status)} text-[11px] px-2 py-1 rounded-full`}
+                        >
+                          {statusLabel(h.status)}
+                        </span>
+                        <div className="text-[11px] text-slate-400">Progress {jobProgress(h)}%</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

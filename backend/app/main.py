@@ -457,6 +457,7 @@ def _backup_from_db(b: DBBackupJob) -> "BackupJobOut":
         org_id=b.org_id,
         company_id=b.company_id,
         user_id=b.user_id,
+        username=_username_from_user_id(b.user_id),
         project_id=b.project_id,
         project_name=b.project_name,
         status=b.status,
@@ -1834,6 +1835,7 @@ class BackupJobOut(BaseModel):
     org_id: str
     company_id: str
     user_id: str
+    username: Optional[str] = None
     project_id: str
     project_name: str
     status: str
@@ -2172,40 +2174,7 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             _set_job_status(db, job, "stopped")
             return
 
-        zip_path = _backup_file_path(job.job_id)
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("meta.json", json.dumps(backup_payload, ensure_ascii=False, indent=2))
-            zf.writestr(
-                fname("EstimateHeaders"),
-                json.dumps(estimates_block.get("headers", []), ensure_ascii=False, indent=2),
-            )
-            zf.writestr(
-                fname("LineItems"),
-                json.dumps(estimates_block.get("lineitems", {}), ensure_ascii=False, indent=2),
-            )
-            zf.writestr(
-                fname("Resources"),
-                json.dumps(estimates_block.get("resources", {}), ensure_ascii=False, indent=2),
-            )
-            zf.writestr(
-                fname("CostGroups"),
-                json.dumps(estimates_block.get("cost_groups", {}), ensure_ascii=False, indent=2),
-            )
-            zf.writestr(
-                fname("Activities"),
-                json.dumps(activities, ensure_ascii=False, indent=2),
-            )
-            zf.writestr(
-                fname("BoqHeaders"),
-                json.dumps(boqs_block.get("headers", []), ensure_ascii=False, indent=2),
-            )
-            zf.writestr(
-                fname("BoqItems"),
-                json.dumps(boqs_block.get("items", []), ensure_ascii=False, indent=2),
-            )
-
-
-        _merge_job_options(job, {**options, "file_path": zip_path})
+        _finalize_zip(100, backup_payload, estimates_block, activities, boqs_block)
         _set_progress(db, job, 100)
         _append_backup_log(db, job, "Backup completed. ZIP ready for download.")
         _set_job_status(db, job, "completed")
@@ -2242,7 +2211,20 @@ def _run_backup_job(job_id: str, session_token: str, options: Dict[str, Any]) ->
             pass
     finally:
         db.close()
-
+@app.get("/api/user/projects/backup/history", response_model=List[BackupJobOut])
+def list_backup_history(
+    limit: int = 10, ctx: SessionCtx = Depends(require_org_user), db: SASession = Depends(get_db)
+):
+    _ensure_feature(ctx, "projects.backup", db)
+    safe_limit = max(1, min(int(limit), 50))
+    jobs = (
+        db.query(DBBackupJob)
+        .filter(DBBackupJob.org_id == ctx.org_id, DBBackupJob.company_id == ctx.company_id)
+        .order_by(DBBackupJob.created_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+    return [_backup_from_db(j) for j in jobs]
 
 
 @app.post("/api/user/projects/backup", response_model=BackupJobOut)

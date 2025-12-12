@@ -270,6 +270,10 @@ export const api = {
     list() {
       return request<any[]>("/user/projects");
     },
+    history(limit = 10) {
+      const query = limit ? `?limit=${limit}` : "";
+      return request<any[]>(`/user/projects/backup/history${query}`);
+    },
     startBackup(payload: any) {
       return request("/user/projects/backup", {
         method: "POST",
